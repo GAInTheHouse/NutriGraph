@@ -6,6 +6,7 @@ import pandas as pd
 from typing import Optional
 
 from ..core.models import NutritionEstimate, Ingredient, Dish
+from ..core.config import settings
 
 
 def render_macro_card(estimate: NutritionEstimate) -> None:
@@ -144,8 +145,6 @@ def render_ingredient_editor(key_prefix: str = "ing") -> Optional[Ingredient]:
     Returns:
         Ingredient if valid input provided, None otherwise.
     """
-    from ..core.config import settings
-    
     col1, col2, col3 = st.columns([3, 1, 1])
     
     with col1:
