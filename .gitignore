@@ -1,2 +1,17 @@
+# Data (downloaded and generated)
+data/raw/
+data/processed/
+data/chroma/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+
+# IDE
+.idea/
+*.swp
 .env
 __pycache__/

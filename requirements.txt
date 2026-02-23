@@ -1,3 +1,10 @@
+# NutriGraph - dataset download, clean, and vector index
+chromadb>=0.4.22
+sentence-transformers>=2.2.2
+pandas>=2.0.0
+pyarrow>=14.0.0
+requests>=2.31.0
+tqdm>=4.66.0
 streamlit>=1.28.0
 pydantic>=2.0.0
 pandas>=2.0.0
