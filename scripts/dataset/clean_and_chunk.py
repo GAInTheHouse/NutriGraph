@@ -46,7 +46,7 @@ def load_usda_foundation(raw_dir: Path) -> list[dict]:
             data = json.loads(path.read_text(encoding="utf-8"))
         except Exception:
             continue
-        foods = data.get("FoundationFoods") or data.get("foundationFoods") if isinstance(data, dict) else data
+        foods = (data.get("FoundationFoods") or data.get("foundationFoods")) if isinstance(data, dict) else data
         if foods is None or not isinstance(foods, list):
             foods = data if isinstance(data, list) else []
         if not foods:
@@ -78,9 +78,11 @@ def load_usda_sr_legacy(raw_dir: Path) -> list[dict]:
             continue
         # Official key in download is SRLegacyFoods
         foods = (
-            data.get("SRLegacyFoods")
-            or data.get("SR Legacy Food")
-            or data.get("srLegacyFood")
+            (
+                data.get("SRLegacyFoods")
+                or data.get("SR Legacy Food")
+                or data.get("srLegacyFood")
+            )
             if isinstance(data, dict)
             else data
         )
@@ -125,14 +127,20 @@ def load_openfoodfacts(raw_dir: Path, max_rows: int = 100_000) -> list[dict]:
                 name = (r.get("product_name") or "").strip()
                 if not name or len(name) < 2:
                     continue
-                try:
-                    energy = float(r.get("energy_100g") or 0)
-                    protein = float(r.get("proteins_100g") or 0)
-                    carb = float(r.get("carbohydrates_100g") or 0)
-                    fat = float(r.get("fat_100g") or 0)
-                except (ValueError, TypeError):
-                    continue
-                if energy > 500:
+
+                def _parse(val):
+                    if val is None or (isinstance(val, str) and val.strip() in ("", "nan")):
+                        return None
+                    try:
+                        return float(val)
+                    except (ValueError, TypeError):
+                        return None
+
+                energy = _parse(r.get("energy_100g"))
+                protein = _parse(r.get("proteins_100g"))
+                carb = _parse(r.get("carbohydrates_100g"))
+                fat = _parse(r.get("fat_100g"))
+                if energy is not None and energy > 500:
                     energy = energy / 4.184
                 rows.append({
                     "source": "openfoodfacts",
