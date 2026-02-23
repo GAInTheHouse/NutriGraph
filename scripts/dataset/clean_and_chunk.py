@@ -140,7 +140,10 @@ def load_openfoodfacts(raw_dir: Path, max_rows: int = 100_000) -> list[dict]:
                 protein = _parse(r.get("proteins_100g"))
                 carb = _parse(r.get("carbohydrates_100g"))
                 fat = _parse(r.get("fat_100g"))
-                if energy is not None and energy > 500:
+                # OpenFoodFacts energy_100g is often in kJ. Only convert when value is clearly
+                # in kJ range (>1000); realistic kcal/100g is at most ~900 (fats). Avoid
+                # dividing genuine kcal values (e.g. 900) by 4.184.
+                if energy is not None and energy > 1000:
                     energy = energy / 4.184
                 rows.append({
                     "source": "openfoodfacts",
