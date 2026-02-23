@@ -13,3 +13,5 @@ venv/
 # IDE
 .idea/
 *.swp
+.env
+__pycache__/
