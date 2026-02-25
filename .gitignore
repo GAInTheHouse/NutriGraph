@@ -2,6 +2,7 @@
 data/raw/
 data/processed/
 data/chroma/
+data/sample_images/
 
 # Python
 __pycache__/
@@ -9,6 +10,8 @@ __pycache__/
 .venv/
 venv/
 .env
+src/tests/test_extract_ingredients.py
+src/tests/test_extract_ingredients.ipynb
 
 # IDE
 .idea/
