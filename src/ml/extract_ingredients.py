@@ -11,12 +11,14 @@ from typing import Union
 import requests
 
 
-INGREDIENTS_PROMPT = """Look at this food image and list the exact ingredients you can identify in the dish.
+INGREDIENTS_PROMPT = """You are an expert culinary image analyzer. Look at this food image and list the exact ingredients you can identify in the dish.
 
-Respond with ONLY a valid JSON object. Use this exact format:
-{"ingredients": ["ingredient 1", "ingredient 2", "ingredient 3"]}
+List every visible or identifiable ingredient (e.g., vegetables, proteins, sauces, herbs, grains). Use short, clear names.
 
-List every visible or identifiable ingredient (e.g., vegetables, proteins, sauces, herbs, grains). Use short, clear names."""
+CRITICAL INSTRUCTION: You must respond with ONLY a valid JSON object. Do not include any conversational text, explanations, or Markdown code blocks (do not use ```).
+
+Use this exact format:
+{"ingredients": ["ingredient 1", "ingredient 2", "ingredient 3"]}"""
 
 
 def _image_to_base64_and_mime(
@@ -56,17 +58,17 @@ def _parse_ingredients_json(text: str) -> dict:
 
 
 def extract_ingredients_from_image(
-    image_input: Union[str, Path, bytes],
+    image_input: Union[str, Path, bytes, list[Union[str, Path, bytes]]],
     *,
     mime_type: str = "image/jpeg",
     api_key: Union[str, None] = None,
 ) -> dict:
     """
-    Extract ingredients from a food image using Gemini 2.5 Flash Lite via Vertex AI REST API.
+    Extract ingredients from one or multiple food images using Gemini 2.5 Flash Lite via Vertex AI REST API.
 
     Args:
-        image_input: Path to an image file (str or Path) or raw image bytes.
-        mime_type: MIME type when image_input is bytes (e.g. "image/jpeg", "image/png").
+        image_input: A single image (Path, str, or bytes) or a list of multiple images.
+        mime_type: Default MIME type when image_input contains bytes (e.g. "image/jpeg", "image/png").
         api_key: Vertex AI API Key. If None, uses VERTEXAI_API_KEY from environment.
 
     Returns:
@@ -74,7 +76,7 @@ def extract_ingredients_from_image(
         {"ingredients": ["tomato", "basil", "mozzarella"]}
 
     Raises:
-        FileNotFoundError: If image_input is a path and the file does not exist.
+        FileNotFoundError: If an image_input path does not exist.
         ValueError: If api_key is missing or the model response could not be parsed.
         RuntimeError: If the API request fails.
     """
@@ -91,23 +93,28 @@ def extract_ingredients_from_image(
             "Vertex AI API Key required. Set VERTEXAI_API_KEY in your .env file or environment."
         )
 
-    # Prepare the base64 image data
-    b64_data, resolved_mime = _image_to_base64_and_mime(image_input, mime_type=mime_type)
+    # Normalize image_input to a list
+    if not isinstance(image_input, list):
+        image_input = [image_input]
+
+    # Prepare parts for the JSON payload
+    parts = [{"text": INGREDIENTS_PROMPT}]
+    
+    for img in image_input:
+        b64_data, resolved_mime = _image_to_base64_and_mime(img, mime_type=mime_type)
+        parts.append({
+            "inlineData": {
+                "mimeType": resolved_mime,
+                "data": b64_data
+            }
+        })
 
     # Construct the JSON payload for the REST API
     payload = {
         "contents": [
             {
                 "role": "user",
-                "parts": [
-                    {"text": INGREDIENTS_PROMPT},
-                    {
-                        "inlineData": {
-                            "mimeType": resolved_mime,
-                            "data": b64_data
-                        }
-                    }
-                ]
+                "parts": parts
             }
         ],
         "generationConfig": {
