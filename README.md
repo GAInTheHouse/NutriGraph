@@ -27,10 +27,14 @@ NutriGraph/
 │   │   ├── api_client.py     # Backend API client (mock)
 │   │   ├── config.py         # Settings and constants
 │   │   └── models.py         # Pydantic data models
-│   └── ui/
-│       ├── components.py     # Shared UI widgets
-│       ├── diner.py          # Diner tab interface
-│       └── restaurant.py     # Restaurant tab interface
+│   ├── ui/
+│   │   ├── components.py     # Shared UI widgets
+│   │   ├── diner.py          # Diner tab interface
+│   │   └── restaurant.py     # Restaurant tab interface
+│   ├── backend/
+│   │   └── retrieval_server.py  # FastAPI retrieval backend (ingredients → vector DB)
+│   └── ml/
+│       └── extract_ingredients.py  # Image → ingredient list via Gemini
 ├── environment.yml           # Conda environment file
 ├── requirements.txt          # Python dependencies (pip)
 ├── .env.example              # Environment variables template
@@ -67,13 +71,23 @@ copy .env.example .env  # Windows
 # Edit .env with your settings (optional)
 ```
 
-### 3. Run the Application
+### 3. Run the Streamlit UI
 
 ```bash
 streamlit run app.py
 ```
 
 The app will open in your browser at `http://localhost:8501`.
+
+### 4. (Optional) Run the Retrieval Backend
+
+The FastAPI backend for ingredient retrieval can be started with:
+
+```bash
+uvicorn src.backend.retrieval_server:app --reload --port 8000
+```
+
+The UI's `NUTRIGRAPH_BACKEND_URL` should point to this URL when backend integration is enabled.
 
 ## Configuration
 
@@ -88,11 +102,12 @@ Environment variables (set in `.env` or system environment):
 
 ### Current Status
 
-This is a **UI skeleton** with mock data. The backend integration is planned for future development.
+- Streamlit UI is functional but still uses **mock nutrition estimates**.
+- A FastAPI **retrieval backend** exists for ingredient ↔ vector DB lookups.
 
 ### Mock Mode
 
-All API calls currently return mock data:
+UI-level API calls currently return mock data:
 - Nutrition estimates are generated from dish names (deterministic based on name)
 - Ingredients are randomly generated but reproducible
 - No actual backend connection is required
