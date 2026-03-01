@@ -133,10 +133,11 @@ def retrieve_node(state: ClarificationState) -> ClarificationState:
 
         for m_idx, mid in enumerate(ids):
             if m_idx >= len(dists):
-                # Skip inconsistent result rows
+                # Skip inconsistent result rows (distance missing)
                 continue
             distance = float(dists[m_idx])
-            meta = metadatas[m_idx] or {}
+            meta = metadatas[m_idx] if m_idx < len(metadatas) else {}
+            meta = meta or {}
             name = str(meta.get("name", ""))
 
             score = _combined_match_score(distance, query_text, name)
