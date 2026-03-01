@@ -18,16 +18,14 @@ COLLECTION_NAME = "nutrigraph_ingredients"
 
 
 def make_document_text(row: pd.Series) -> str:
-    """One text blob per ingredient for embedding (name + nutrient summary)."""
-    parts = [str(row.get("name", "")).strip()]
-    for key in ("energy_kcal", "protein_g", "carbohydrates_g", "fat_g"):
-        v = row.get(key)
-        if v is not None and pd.notna(v):
-            try:
-                parts.append(f"{key}: {float(v):.1f}")
-            except (TypeError, ValueError):
-                pass
-    return " | ".join(parts)
+    """
+    Text used for embedding in the ingredient index.
+
+    We embed ONLY the cleaned ingredient name here so that vector similarity
+    is dominated by semantic name similarity (e.g. "chicken breast"), while
+    nutrient values are stored separately in metadata.
+    """
+    return str(row.get("name", "")).strip()
 
 
 def select_top_ingredients(df: pd.DataFrame, top_n: int) -> pd.DataFrame:
