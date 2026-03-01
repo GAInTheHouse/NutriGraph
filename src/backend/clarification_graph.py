@@ -112,7 +112,10 @@ def retrieve_node(state: ClarificationState) -> ClarificationState:
     collection = _get_collection()
     model = _get_embedding_model()
 
-    ingredients = [text.strip() for text in state.get("ingredients", []) if text.strip()]
+    # Clean and normalize ingredient strings (drop blanks, trim whitespace)
+    ingredients = [text.strip() for text in state.get("ingredients", []) if text and text.strip()]
+    # Persist cleaned list back into state so indices stay aligned downstream
+    state["ingredients"] = ingredients
     if not ingredients:
         state["matches"] = []
         state["scores"] = []
@@ -186,13 +189,13 @@ def decide_low_conf_node(
     scores = state.get("scores", [])
     ingredients = state.get("ingredients", [])
 
-    low_indices: List[int] = [
-        idx for idx, s in enumerate(scores) if s < threshold
-    ]
+    low_indices: List[int] = [idx for idx, s in enumerate(scores) if s < threshold]
     state["low_conf_indices"] = low_indices
     state["low_conf_ingredients"] = [
         ingredients[idx] for idx in low_indices if idx < len(ingredients)
     ]
+    # Persist the effective threshold into state so callers can inspect it
+    state["threshold"] = threshold
     return state
 
 
