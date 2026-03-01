@@ -4,7 +4,17 @@ Set up ChromaDB and index the top N most common ingredients from cleaned data.
 Run after clean_and_chunk.py. Run from project root: python scripts/dataset/index_ingredients.py
 """
 import argparse
+import sys
 from pathlib import Path
+
+# ChromaDB uses Pydantic v1 internally, which is incompatible with Python 3.14+.
+# See: https://github.com/chroma-core/chroma/issues/5996
+if sys.version_info >= (3, 14):
+    print(
+        "Error: ChromaDB is incompatible with Python 3.14+. Use Python 3.12 or 3.13.\n"
+        "Recreate your conda env: conda env remove -n nutrigraph && conda env create -f environment.yml"
+    )
+    sys.exit(1)
 
 import chromadb
 import pandas as pd

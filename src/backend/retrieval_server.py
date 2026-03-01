@@ -5,16 +5,26 @@ Exposes a retrieval endpoint that takes a list of ingredient texts and returns
 the closest matches from the ChromaDB ingredient index.
 """
 
+import sys
 from pathlib import Path
 from typing import Dict, List, Optional
 
 import chromadb
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field, field_validator
 from sentence_transformers import SentenceTransformer
 
+# Ensure the project root is on sys.path so src.* imports resolve correctly
+# when the server is launched from any working directory.
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+from src.core.models import AnalyzedIngredient, DishAnalysisResponse  # noqa: E402
+from src.ml.extract_ingredients import extract_ingredients_from_image  # noqa: E402
+
+
+PROJECT_ROOT = _PROJECT_ROOT
 CHROMA_DIR = PROJECT_ROOT / "data" / "chroma"
 COLLECTION_NAME = "nutrigraph_ingredients"
 
@@ -179,4 +189,135 @@ def retrieve_ingredients(payload: IngredientRetrievalRequest) -> IngredientRetri
 
     return IngredientRetrievalResponse(results=out)
 
+
+# ── Dish image analysis ───────────────────────────────────────────────────────
+
+def _distance_to_confidence(distance: float) -> float:
+    """
+    Convert a ChromaDB distance score to a confidence value in [0, 1].
+
+    Uses a sigmoid-style mapping that works for both L2 and cosine distances:
+    - distance 0.0  → confidence ~1.0  (perfect match)
+    - distance 1.0  → confidence ~0.5
+    - distance 2.0+ → confidence approaching 0
+    """
+    return round(1.0 / (1.0 + distance), 4)
+
+
+def _lookup_nutrition(
+    ingredient_names: List[str],
+    collection: chromadb.Collection,
+    model: SentenceTransformer,
+) -> Dict[str, dict]:
+    """
+    Query ChromaDB for the best nutritional match for each ingredient name.
+
+    Returns a mapping of ``{ingredient_name: {energy_kcal, protein_g, carbohydrates_g, fat_g, confidence}}``.
+    Ingredients with no index match default to zeros.
+    """
+    if not ingredient_names:
+        return {}
+
+    embeddings = model.encode(ingredient_names, show_progress_bar=False).tolist()
+    result = collection.query(query_embeddings=embeddings, n_results=1)
+
+    nutrition_map: Dict[str, dict] = {}
+    for idx, name in enumerate(ingredient_names):
+        distances = result.get("distances", [[]])[idx]
+        metadatas = result.get("metadatas", [[]])[idx]
+
+        if distances and metadatas:
+            distance = float(distances[0])
+            meta = metadatas[0] or {}
+            nutrition_map[name] = {
+                "energy_kcal": float(meta.get("energy_kcal") or 0.0),
+                "protein_g": float(meta.get("protein_g") or 0.0),
+                "carbohydrates_g": float(meta.get("carbohydrates_g") or 0.0),
+                "fat_g": float(meta.get("fat_g") or 0.0),
+                "confidence": _distance_to_confidence(distance),
+            }
+        else:
+            nutrition_map[name] = {
+                "energy_kcal": 0.0,
+                "protein_g": 0.0,
+                "carbohydrates_g": 0.0,
+                "fat_g": 0.0,
+                "confidence": 0.0,
+            }
+
+    return nutrition_map
+
+
+@app.post(
+    "/api/v1/analyze-dish",
+    response_model=DishAnalysisResponse,
+    tags=["analysis"],
+    summary="Analyze a dish photo and return a full nutritional breakdown",
+)
+async def analyze_dish(
+    file: UploadFile = File(..., description="JPEG or PNG photo of the dish to analyze"),
+) -> DishAnalysisResponse:
+    """
+    Full image-to-nutrition pipeline:
+
+    1. **Gemini 2.5 Flash Lite** identifies the dish name and ingredient list from the photo.
+    2. **ChromaDB RAG retrieval** looks up the best nutritional match for each ingredient.
+    3. Returns a :class:`DishAnalysisResponse` with per-ingredient macros and dish-level totals.
+
+    Requires `VERTEXAI_API_KEY` to be set in the environment (or `.env` file).
+    """
+    # ── 1. Read image bytes ───────────────────────────────────────────────────
+    image_bytes = await file.read()
+    if not image_bytes:
+        raise HTTPException(status_code=422, detail="Uploaded file is empty.")
+
+    mime_type = file.content_type or "image/jpeg"
+
+    # ── 2. Gemini: extract dish name + ingredients ────────────────────────────
+    try:
+        dish_info = extract_ingredients_from_image(image_bytes, mime_type=mime_type)
+    except ValueError as exc:
+        # Missing API key or unparseable model response
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        # Vertex AI returned a non-2xx response
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500, detail=f"Unexpected error during image analysis: {exc}"
+        ) from exc
+
+    dish_name: str = dish_info.get("dish_name", "Analyzed Dish")
+    ingredient_names: List[str] = [
+        i.strip() for i in dish_info.get("ingredients", []) if i and i.strip()
+    ]
+
+    # ── 3. ChromaDB: look up nutrition for each ingredient ────────────────────
+    collection = _get_collection_or_raise()
+    embed_model = _get_embedding_model()
+    nutrition_map = _lookup_nutrition(ingredient_names, collection, embed_model)
+
+    # ── 4. Assemble response ──────────────────────────────────────────────────
+    analyzed: List[AnalyzedIngredient] = []
+    for name in ingredient_names:
+        n = nutrition_map.get(name, {})
+        analyzed.append(
+            AnalyzedIngredient(
+                name=name,
+                confidence_score=n.get("confidence", 0.0),
+                calories=n.get("energy_kcal", 0.0),
+                protein=n.get("protein_g", 0.0),
+                carbs=n.get("carbohydrates_g", 0.0),
+                fat=n.get("fat_g", 0.0),
+            )
+        )
+
+    return DishAnalysisResponse(
+        dish_name=dish_name,
+        total_calories=round(sum(a.calories for a in analyzed), 1),
+        total_protein=round(sum(a.protein for a in analyzed), 1),
+        total_carbs=round(sum(a.carbs for a in analyzed), 1),
+        total_fat=round(sum(a.fat for a in analyzed), 1),
+        ingredients=analyzed,
+    )
 

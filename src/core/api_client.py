@@ -1,14 +1,25 @@
 """
 API client for NutriGraph backend service.
 
-Currently implements mock responses. Will be connected to FastAPI backend later.
+Mock methods (estimate_nutrition, builder_generate_profile) remain for the text-search
+workflow. analyze_dish_image targets the real FastAPI image pipeline.
 """
 from typing import Optional
 import logging
 
-from .models import Dish, NutritionEstimate
+import requests
+
+from .models import Dish, NutritionEstimate, DishAnalysisResponse
 
 logger = logging.getLogger(__name__)
+
+
+class NutriGraphAPIError(Exception):
+    """Raised when the NutriGraph backend returns an error or is unreachable."""
+
+    def __init__(self, message: str, status_code: Optional[int] = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
 
 
 class NutriGraphClient:
@@ -93,20 +104,71 @@ class NutriGraphClient:
         # return NutritionEstimate(**response.json())
         raise NotImplementedError("Backend API not yet implemented")
     
+    def analyze_dish_image(self, image_bytes: bytes, filename: str) -> DishAnalysisResponse:
+        """
+        Send a dish photo to the Gemini vision pipeline and retrieve its nutritional breakdown.
+
+        Makes a multipart POST to ``/api/v1/analyze-dish``.  The backend is expected to
+        return a JSON body that maps directly onto :class:`DishAnalysisResponse`.
+
+        Args:
+            image_bytes: Raw bytes of the uploaded image.
+            filename: Original filename (used to infer MIME type on the server side).
+
+        Returns:
+            DishAnalysisResponse with totals and per-ingredient macros.
+
+        Raises:
+            NutriGraphAPIError: If the backend is unreachable, times out, or returns a
+                non-2xx status code.
+        """
+        url = f"{self.base_url}/api/v1/analyze-dish"
+        try:
+            response = requests.post(
+                url,
+                files={"file": (filename, image_bytes, "image/jpeg")},
+                timeout=60,
+            )
+            response.raise_for_status()
+            return DishAnalysisResponse(**response.json())
+
+        except requests.exceptions.ConnectionError as exc:
+            logger.error("Backend unreachable at %s: %s", url, exc)
+            raise NutriGraphAPIError(
+                "Could not connect to the NutriGraph backend. "
+                "Please verify the server is running and the URL is correct."
+            ) from exc
+
+        except requests.exceptions.Timeout as exc:
+            logger.error("Request to %s timed out.", url)
+            raise NutriGraphAPIError(
+                "The request timed out. The backend may be overloaded — please try again."
+            ) from exc
+
+        except requests.exceptions.HTTPError as exc:
+            status_code = exc.response.status_code if exc.response is not None else None
+            logger.error("Backend returned HTTP %s for %s: %s", status_code, url, exc)
+            raise NutriGraphAPIError(
+                f"The backend returned an error (HTTP {status_code}). Please try again later.",
+                status_code=status_code,
+            ) from exc
+
+        except Exception as exc:
+            logger.exception("Unexpected error calling analyze-dish endpoint.")
+            raise NutriGraphAPIError(f"An unexpected error occurred: {exc}") from exc
+
     def health_check(self) -> bool:
         """
         Check if the backend API is available.
-        
+
         Returns:
             True if backend is healthy, False otherwise.
         """
         if self._mock_mode:
             return True
-        
-        # TODO: Implement actual health check
-        # try:
-        #     response = requests.get(f"{self.base_url}/health", timeout=5)
-        #     return response.status_code == 200
-        # except requests.RequestException:
-        #     return False
-        return False
+
+        try:
+            response = requests.get(f"{self.base_url}/health", timeout=5)
+            return response.status_code == 200
+        except requests.RequestException:
+            return False
