@@ -67,6 +67,29 @@ class FeedbackSubmission(BaseModel):
     submitted_at: Optional[str] = None
 
 
+class AnalyzedIngredient(BaseModel):
+    """A single ingredient identified and analyzed from a dish photo."""
+    name: str = Field(..., description="Name of the identified ingredient")
+    confidence_score: float = Field(..., ge=0, le=1, description="Model confidence (0–1)")
+    calories: float = Field(..., ge=0, description="Calories contributed by this ingredient (kcal)")
+    protein: float = Field(..., ge=0, description="Protein in grams")
+    carbs: float = Field(..., ge=0, description="Carbohydrates in grams")
+    fat: float = Field(..., ge=0, description="Fat in grams")
+
+
+class DishAnalysisResponse(BaseModel):
+    """Full nutritional analysis returned by the image-to-ingredient pipeline."""
+    dish_name: str = Field(..., description="Name inferred from the dish photo")
+    total_calories: float = Field(..., ge=0, description="Sum of calories across all ingredients")
+    total_protein: float = Field(..., ge=0, description="Sum of protein (g) across all ingredients")
+    total_carbs: float = Field(..., ge=0, description="Sum of carbohydrates (g) across all ingredients")
+    total_fat: float = Field(..., ge=0, description="Sum of fat (g) across all ingredients")
+    ingredients: list[AnalyzedIngredient] = Field(
+        default_factory=list,
+        description="Per-ingredient breakdown with individual macros and confidence",
+    )
+
+
 def generate_mock_ingredients(dish_name: str, count: int = 5) -> list[Ingredient]:
     """
     Generate mock ingredients for a dish based on its name.
