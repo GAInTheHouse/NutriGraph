@@ -17,7 +17,6 @@ FastAPI endpoints or scripts, and then wired into the Streamlit app later.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from typing import Dict, List, Optional, TypedDict
 
 from langgraph.graph import END, StateGraph
@@ -32,6 +31,7 @@ class RetrievalMatch(TypedDict, total=False):
     name: str
     source: str
     distance: float
+    score: float
     energy_kcal: Optional[float]
     protein_g: Optional[float]
     carbohydrates_g: Optional[float]
@@ -46,16 +46,18 @@ class ClarificationState(TypedDict, total=False):
     Fields:
         ingredients: Raw ingredient query strings.
         threshold: Match score threshold in [0, 1]; below -> ask clarification.
-        matches: Mapping ingredient -> list of RetrievalMatch from vector DB.
-        scores: Mapping ingredient -> best combined score (embedding + lexical).
-        low_conf_ingredients: Ingredients whose best score < threshold.
+        matches: Per-ingredient list of RetrievalMatch from vector DB (aligned by index).
+        scores: Per-ingredient best combined score (embedding + lexical), aligned by index.
+        low_conf_indices: Ingredient indices whose best score < threshold.
+        low_conf_ingredients: Ingredient strings corresponding to low_conf_indices.
         questions: List of clarification questions to ask the user.
     """
 
     ingredients: List[str]
     threshold: float
-    matches: Dict[str, List[RetrievalMatch]]
-    scores: Dict[str, float]
+    matches: List[List[RetrievalMatch]]
+    scores: List[float]
+    low_conf_indices: List[int]
     low_conf_ingredients: List[str]
     questions: List[str]
 
@@ -112,16 +114,17 @@ def retrieve_node(state: ClarificationState) -> ClarificationState:
 
     ingredients = [text.strip() for text in state.get("ingredients", []) if text.strip()]
     if not ingredients:
-        state["matches"] = {}
-        state["scores"] = {}
+        state["matches"] = []
+        state["scores"] = []
+        state["low_conf_indices"] = []
         state["low_conf_ingredients"] = []
         return state
 
     embeddings = model.encode(ingredients, show_progress_bar=False).tolist()
     result = collection.query(query_embeddings=embeddings, n_results=5)
 
-    matches: Dict[str, List[RetrievalMatch]] = {}
-    scores: Dict[str, float] = {}
+    all_matches: List[List[RetrievalMatch]] = []
+    scores: List[float] = []
 
     for idx, query_text in enumerate(ingredients):
         ids = result.get("ids", [[]])[idx]
@@ -149,6 +152,7 @@ def retrieve_node(state: ClarificationState) -> ClarificationState:
                     name=name,
                     source=str(meta.get("source", "")),
                     distance=distance,
+                    score=score,
                     energy_kcal=meta.get("energy_kcal"),
                     protein_g=meta.get("protein_g"),
                     carbohydrates_g=meta.get("carbohydrates_g"),
@@ -157,23 +161,38 @@ def retrieve_node(state: ClarificationState) -> ClarificationState:
                 )
             )
 
-        matches[query_text] = ing_matches
-        scores[query_text] = best_score
+        # Sort matches by their combined score (descending) so index 0 is best
+        ing_matches.sort(key=lambda m: m.get("score", 0.0), reverse=True)
 
-    state["matches"] = matches
+        all_matches.append(ing_matches)
+        scores.append(best_score)
+
+    state["matches"] = all_matches
     state["scores"] = scores
     return state
 
 
-def decide_low_conf_node(state: ClarificationState) -> ClarificationState:
+def decide_low_conf_node(
+    state: ClarificationState, default_threshold: float = 0.7
+) -> ClarificationState:
     """
     Node: determine which ingredients are low-confidence based on threshold.
     """
-    threshold = state.get("threshold", 0.7)
-    scores = state.get("scores", {})
+    # If the caller provided an explicit threshold in state, use it.
+    # Otherwise, fall back to the default configured at graph build time.
+    threshold = state.get("threshold")
+    if threshold is None:
+        threshold = default_threshold
+    scores = state.get("scores", [])
+    ingredients = state.get("ingredients", [])
 
-    low_conf = [ing for ing, s in scores.items() if s < threshold]
-    state["low_conf_ingredients"] = low_conf
+    low_indices: List[int] = [
+        idx for idx, s in enumerate(scores) if s < threshold
+    ]
+    state["low_conf_indices"] = low_indices
+    state["low_conf_ingredients"] = [
+        ingredients[idx] for idx in low_indices if idx < len(ingredients)
+    ]
     return state
 
 
@@ -182,7 +201,7 @@ def router(state: ClarificationState) -> str:
     Conditional edge: if there are low-confidence ingredients, go to 'ask',
     otherwise end the graph.
     """
-    if state.get("low_conf_ingredients"):
+    if state.get("low_conf_indices"):
         return "ask"
     return END
 
@@ -228,18 +247,18 @@ def build_clarification_graph(default_threshold: float = 0.7):
     """
     graph = StateGraph(ClarificationState)
     graph.add_node("retrieve", retrieve_node)
-    graph.add_node("decide_low_conf", decide_low_conf_node)
+    # Bind the default threshold into the node via a closure so it is applied
+    # whenever the state does not contain an explicit threshold.
+    graph.add_node(
+        "decide_low_conf",
+        lambda s, dt=default_threshold: decide_low_conf_node(s, dt),
+    )
     graph.add_node("ask", ask_node)
 
     graph.set_entry_point("retrieve")
     graph.add_edge("retrieve", "decide_low_conf")
     graph.add_conditional_edges("decide_low_conf", router, {"ask": "ask", END: END})
 
-    compiled = graph.compile()
-
-    # Attach default threshold as metadata helper (optional)
-    compiled.default_threshold = default_threshold  # type: ignore[attr-defined]
-
-    return compiled
+    return graph.compile()
 
 

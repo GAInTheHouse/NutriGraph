@@ -45,24 +45,24 @@ def main() -> None:
 
     result = graph.invoke(state_in)
 
-    scores = result.get("scores", {})
-    matches_by_ing = result.get("matches", {})
-    low_conf = set(result.get("low_conf_ingredients", []))
+    scores = result.get("scores", [])
+    matches_by_ing = result.get("matches", [])
+    low_conf_indices = set(result.get("low_conf_indices", []))
     thr = result.get("threshold", threshold)
 
     print("=== Clarification Graph Test ===")
     print(f"Threshold: {thr:.2f}")
     print()
     print("Per-ingredient scores and top match (including nutrients):")
-    for ing in ingredients:
-        s = scores.get(ing)
-        mlist = matches_by_ing.get(ing, []) or []
+    for idx, ing in enumerate(ingredients):
+        s = scores[idx] if idx < len(scores) else None
+        mlist = matches_by_ing[idx] if idx < len(matches_by_ing) else []
 
         if s is None or not mlist:
             print(f"  - {ing!r}: score = N/A (no matches)")
             continue
 
-        status = "LOW CONFIDENCE" if ing in low_conf else "ok"
+        status = "LOW CONFIDENCE" if idx in low_conf_indices else "ok"
         print(f"  - {ing!r}: score = {s:.3f}  [{status}]")
 
         top = mlist[0]
