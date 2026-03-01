@@ -1,5 +1,6 @@
 """
-Extract ingredients from a food image using Gemini 2.5 Flash Lite via Vertex AI REST API.
+Extract ingredients (and optionally a dish name) from a food image using
+Gemini 2.5 Flash Lite via the Vertex AI REST API.
 """
 
 import base64
@@ -11,14 +12,16 @@ from typing import Union
 import requests
 
 
-INGREDIENTS_PROMPT = """You are an expert culinary image analyzer. Look at this food image and list the exact ingredients you can identify in the dish.
+# ── Prompts ───────────────────────────────────────────────────────────────────
 
-List every visible or identifiable ingredient (e.g., vegetables, proteins, sauces, herbs, grains). Use short, clear names.
+INGREDIENTS_PROMPT = """You are an expert culinary image analyzer. Look at this food image and:
+1. Identify the name of the dish (e.g. "Spaghetti Carbonara", "Chicken Caesar Salad").
+2. List the exact ingredients you can identify in the dish (e.g., vegetables, proteins, sauces, herbs, grains). Use short, clear names.
 
 CRITICAL INSTRUCTION: You must respond with ONLY a valid JSON object. Do not include any conversational text, explanations, or Markdown code blocks (do not use ```).
 
 Use this exact format:
-{"ingredients": ["ingredient 1", "ingredient 2", "ingredient 3"]}"""
+{"dish_name": "Dish Name Here", "ingredients": ["ingredient 1", "ingredient 2", "ingredient 3"]}"""
 
 
 def _image_to_base64_and_mime(
@@ -57,6 +60,63 @@ def _parse_ingredients_json(text: str) -> dict:
     return json.loads(text)
 
 
+def _resolve_api_key(api_key: Union[str, None]) -> str:
+    """Load .env and return the effective API key, raising ValueError if absent."""
+    try:
+        from dotenv import load_dotenv
+        load_dotenv()
+    except ImportError:
+        pass
+    key = api_key or os.environ.get("VERTEXAI_API_KEY")
+    if not key:
+        raise ValueError(
+            "Vertex AI API Key required. Set VERTEXAI_API_KEY in your .env file or environment."
+        )
+    return key
+
+
+def _call_gemini(
+    prompt: str,
+    image_input: Union[str, Path, bytes, list],
+    mime_type: str,
+    api_key: str,
+) -> str:
+    """
+    Send a prompt + one or more images to Gemini 2.5 Flash Lite and return the raw text response.
+
+    Raises:
+        RuntimeError: If the Vertex AI API returns a non-2xx status.
+        ValueError: If the response JSON has an unexpected structure.
+    """
+    if not isinstance(image_input, list):
+        image_input = [image_input]
+
+    parts = [{"text": prompt}]
+    for img in image_input:
+        b64_data, resolved_mime = _image_to_base64_and_mime(img, mime_type=mime_type)
+        parts.append({"inlineData": {"mimeType": resolved_mime, "data": b64_data}})
+
+    payload = {
+        "contents": [{"role": "user", "parts": parts}],
+        "generationConfig": {"responseMimeType": "application/json"},
+    }
+
+    url = (
+        "https://aiplatform.googleapis.com/v1/publishers/google/models/"
+        f"gemini-2.5-flash-lite:generateContent?key={api_key}"
+    )
+    response = requests.post(url, headers={"Content-Type": "application/json"}, json=payload)
+
+    if not response.ok:
+        raise RuntimeError(f"Vertex AI API error: {response.status_code} - {response.text}")
+
+    data = response.json()
+    try:
+        return data["candidates"][0]["content"]["parts"][0]["text"]
+    except (KeyError, IndexError) as exc:
+        raise ValueError(f"Unexpected response structure from Vertex AI: {data}") from exc
+
+
 def extract_ingredients_from_image(
     image_input: Union[str, Path, bytes, list[Union[str, Path, bytes]]],
     *,
@@ -64,78 +124,26 @@ def extract_ingredients_from_image(
     api_key: Union[str, None] = None,
 ) -> dict:
     """
-    Extract ingredients from one or multiple food images using Gemini 2.5 Flash Lite via Vertex AI REST API.
+    Extract the dish name and ingredients from one or multiple food images using Gemini 2.5 Flash Lite.
 
     Args:
         image_input: A single image (Path, str, or bytes) or a list of multiple images.
-        mime_type: Default MIME type when image_input contains bytes (e.g. "image/jpeg", "image/png").
-        api_key: Vertex AI API Key. If None, uses VERTEXAI_API_KEY from environment.
+        mime_type: Default MIME type when image_input contains bytes.
+        api_key: Vertex AI API Key. Falls back to VERTEXAI_API_KEY env var.
 
     Returns:
-        A dict with at least "ingredients": list of strings, e.g.:
-        {"ingredients": ["tomato", "basil", "mozzarella"]}
+        ``{"dish_name": "Spaghetti Carbonara", "ingredients": ["tomato", "basil", "mozzarella"]}``
+
+        If the model omits ``dish_name`` or ``ingredients``, defaults are applied.
 
     Raises:
-        FileNotFoundError: If an image_input path does not exist.
-        ValueError: If api_key is missing or the model response could not be parsed.
-        RuntimeError: If the API request fails.
+        FileNotFoundError: If an image path does not exist.
+        ValueError: If the API key is missing or the response cannot be parsed.
+        RuntimeError: If the Vertex AI API request fails.
     """
-    # Load environment variables from .env file
-    try:
-        from dotenv import load_dotenv
-        load_dotenv()
-    except ImportError:
-        pass
-
-    key = api_key or os.environ.get("VERTEXAI_API_KEY")
-    if not key:
-        raise ValueError(
-            "Vertex AI API Key required. Set VERTEXAI_API_KEY in your .env file or environment."
-        )
-
-    # Normalize image_input to a list
-    if not isinstance(image_input, list):
-        image_input = [image_input]
-
-    # Prepare parts for the JSON payload
-    parts = [{"text": INGREDIENTS_PROMPT}]
-    
-    for img in image_input:
-        b64_data, resolved_mime = _image_to_base64_and_mime(img, mime_type=mime_type)
-        parts.append({
-            "inlineData": {
-                "mimeType": resolved_mime,
-                "data": b64_data
-            }
-        })
-
-    # Construct the JSON payload for the REST API
-    payload = {
-        "contents": [
-            {
-                "role": "user",
-                "parts": parts
-            }
-        ],
-        "generationConfig": {
-            "responseMimeType": "application/json"
-        }
-    }
-
-    url = f"https://aiplatform.googleapis.com/v1/publishers/google/models/gemini-2.5-flash-lite:generateContent?key={key}"
-    headers = {"Content-Type": "application/json"}
-
-    response = requests.post(url, headers=headers, json=payload)
-    
-    if not response.ok:
-        raise RuntimeError(f"Vertex AI API error: {response.status_code} - {response.text}")
-    
-    response_data = response.json()
-    
-    try:
-        # Navigate the JSON response structure
-        model_text = response_data["candidates"][0]["content"]["parts"][0]["text"]
-    except (KeyError, IndexError):
-        raise ValueError(f"Unexpected response structure from Vertex AI: {response_data}")
-
-    return _parse_ingredients_json(model_text)
+    key = _resolve_api_key(api_key)
+    text = _call_gemini(INGREDIENTS_PROMPT, image_input, mime_type, key)
+    result = _parse_ingredients_json(text)
+    result.setdefault("dish_name", "Analyzed Dish")
+    result.setdefault("ingredients", [])
+    return result
