@@ -1,16 +1,13 @@
 #!/usr/bin/env python3
 """
-Quick CLI to test the LangGraph clarification state machine.
+Temporary CLI to exercise the LangGraph clarification graph.
 
 Run from project root:
 
-    python scripts/test_clarification.py
+    python tests/test_clarification.py
 
-It will:
-  - Invoke the clarification graph on a sample list of ingredients.
-  - Print the threshold and per-ingredient scores.
-  - Indicate which ingredients are low-confidence.
-  - Show any generated clarification questions.
+This is for local/manual testing only and is not part of the main app or
+automated test suite.
 """
 
 from __future__ import annotations
