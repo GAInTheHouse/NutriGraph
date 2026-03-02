@@ -118,8 +118,16 @@ def load_openfoodfacts(raw_dir: Path, max_rows: int = 100_000) -> list[dict]:
     if not gz_path.exists():
         return []
     rows = []
-    cols = ["product_name", "energy_100g", "proteins_100g", "carbohydrates_100g", "fat_100g"]
+    # Include 'brands' so we can populate the brand metadata field used by the
+    # hybrid retriever's exact-match filter.  The column may be absent in older
+    # snapshots, so we request it via a flexible usecols list below.
+    desired_cols = ["product_name", "brands", "energy_100g", "proteins_100g", "carbohydrates_100g", "fat_100g"]
     try:
+        # Read the header to discover which desired columns actually exist in
+        # this snapshot; gracefully skip any that are absent.
+        header = pd.read_csv(gz_path, compression="gzip", sep="\t", nrows=0)
+        cols = [c for c in desired_cols if c in header.columns]
+
         for chunk in pd.read_csv(gz_path, compression="gzip", sep="\t", usecols=cols, dtype=str, chunksize=50000):
             chunk = chunk.dropna(subset=["product_name"])
             chunk = chunk.dropna(subset=["energy_100g", "proteins_100g", "carbohydrates_100g", "fat_100g"], how="all")
@@ -145,10 +153,20 @@ def load_openfoodfacts(raw_dir: Path, max_rows: int = 100_000) -> list[dict]:
                 # dividing genuine kcal values (e.g. 900) by 4.184.
                 if energy is not None and energy > 1000:
                     energy = energy / 4.184
+
+                # Normalise brand: take the first entry from the comma-separated
+                # brands field (e.g. "Heinz,H.J. Heinz" → "Heinz"), strip
+                # whitespace, and discard placeholder strings.
+                raw_brand = (r.get("brands") or "").strip()
+                brand: str | None = None
+                if raw_brand and raw_brand.lower() not in ("", "nan", "n/a", "unknown"):
+                    brand = raw_brand.split(",")[0].strip() or None
+
                 rows.append({
                     "source": "openfoodfacts",
                     "fdc_id": None,
                     "name": name,
+                    "brand": brand,
                     "energy_kcal": energy,
                     "protein_g": protein,
                     "carbohydrates_g": carb,

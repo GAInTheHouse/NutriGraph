@@ -20,8 +20,14 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from src.core.models import AnalyzedIngredient, DishAnalysisResponse  # noqa: E402
+from src.core.models import (  # noqa: E402
+    AnalyzedIngredient,
+    DishAnalysisResponse,
+    IngredientQuery,
+    RetrievalResponse,
+)
 from src.ml.extract_ingredients import extract_ingredients_from_image  # noqa: E402
+from src.backend.retriever import HybridNutritionRetriever  # noqa: E402
 
 
 PROJECT_ROOT = _PROJECT_ROOT
@@ -96,6 +102,7 @@ app = FastAPI(
 
 _model: Optional[SentenceTransformer] = None
 _collection: Optional[chromadb.Collection] = None
+_hybrid_retriever: HybridNutritionRetriever | None = None
 
 
 def _get_embedding_model() -> SentenceTransformer:
@@ -111,6 +118,13 @@ def _get_collection() -> chromadb.Collection:
         client = chromadb.PersistentClient(path=str(CHROMA_DIR))
         _collection = client.get_collection(name=COLLECTION_NAME)
     return _collection
+
+
+def _get_hybrid_retriever() -> HybridNutritionRetriever:
+    global _hybrid_retriever
+    if _hybrid_retriever is None:
+        _hybrid_retriever = HybridNutritionRetriever()
+    return _hybrid_retriever
 
 
 def _get_collection_or_raise() -> chromadb.Collection:
@@ -188,6 +202,77 @@ def retrieve_ingredients(payload: IngredientRetrievalRequest) -> IngredientRetri
         out.append(IngredientRetrievalItem(query=query_text, matches=matches))
 
     return IngredientRetrievalResponse(results=out)
+
+
+# ── Hybrid single-ingredient retrieval (called by the LangGraph agent) ────────
+
+@app.post(
+    "/api/v1/retrieve-ingredient",
+    response_model=RetrievalResponse,
+    tags=["retrieval"],
+    summary="Hybrid semantic + brand-filtered ingredient lookup",
+)
+async def retrieve_ingredient(payload: IngredientQuery) -> RetrievalResponse:
+    """
+    Hybrid retrieval endpoint for the LangGraph clarification agent.
+
+    Accepts a single ingredient query and an optional brand name resolved
+    during the clarification loop.  Delegates to
+    :class:`~src.backend.retriever.HybridNutritionRetriever` which applies
+    one of two strategies:
+
+    - **Brand-filtered** (``brand`` present): ChromaDB ``where`` pre-filter
+      restricts the vector search to documents whose ``brand`` metadata
+      matches exactly.  Automatically falls back to unfiltered search if no
+      brand-tagged documents exist in the index yet.
+
+    - **Semantic + keyword boost** (``brand`` absent): Standard vector search
+      followed by a ``+0.15`` score boost for any result whose ``exact_name``
+      contains the query as a substring.  Re-ranked by adjusted score.
+
+    Returns up to ``top_k`` results ordered by similarity_score descending.
+
+    Raises
+    ------
+    HTTP 404
+        When the retriever returns no results at all (index may be empty or
+        the query is too far from any indexed document).
+    HTTP 500
+        On ChromaDB initialisation or query errors (e.g. index not built yet,
+        corrupt data directory).
+    """
+    try:
+        retriever = _get_hybrid_retriever()
+        results = retriever.search_ingredient(
+            query=payload.query,
+            brand=payload.brand,
+            top_k=payload.top_k,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "ChromaDB index not found. Run the indexing step first: "
+                "python scripts/dataset/index_ingredients.py"
+            ),
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Retrieval error: {exc}",
+        ) from exc
+
+    if not results:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"No close matches found for '{payload.query}'"
+                + (f" (brand: '{payload.brand}')" if payload.brand else "")
+                + ". Try a broader query or omit the brand filter."
+            ),
+        )
+
+    return RetrievalResponse(results=results)
 
 
 # ── Dish image analysis ───────────────────────────────────────────────────────
