@@ -130,6 +130,10 @@ def load_openfoodfacts(raw_dir: Path, max_rows: int = 100_000) -> list[dict]:
         nutrient_cols = ["energy_100g", "proteins_100g", "carbohydrates_100g", "fat_100g"]
         loaded_nutrient_cols = [c for c in nutrient_cols if c in cols]
 
+        if not loaded_nutrient_cols:
+            print("OpenFoodFacts: no nutrient columns found in this snapshot; skipping ingestion.")
+            return []
+
         for chunk in pd.read_csv(gz_path, compression="gzip", sep="\t", usecols=cols, dtype=str, chunksize=50000):
             if "product_name" in cols:
                 chunk = chunk.dropna(subset=["product_name"])

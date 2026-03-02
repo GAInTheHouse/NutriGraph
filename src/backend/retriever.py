@@ -22,6 +22,7 @@ ChromaDB metadata schema (per document in 'nutrigraph_ingredients'):
     source          : str   – 'usda_foundation' | 'usda_sr_legacy' | 'openfoodfacts'
 """
 
+import logging
 import sys
 from pathlib import Path
 from typing import Any
@@ -244,10 +245,13 @@ class HybridNutritionRetriever:
                     self._build_ingredient(ids[i], float(dists[i]), metas[i] or {})
                     for i in range(len(ids))
                 ]
-        except Exception:
+        except chromadb.errors.InvalidArgumentError:
             # ChromaDB raises if the where clause references a field that does
             # not exist in any document; treat this as "no results".
-            pass
+            logging.warning(
+                "Brand filter failed for brand=%r; falling back to unfiltered search.",
+                brand,
+            )
 
         # Fallback: unfiltered semantic search (use original query, not brand)
         return self._search_semantic_boosted(

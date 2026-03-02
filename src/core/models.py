@@ -111,6 +111,16 @@ class IngredientQuery(BaseModel):
         if not v or not v.strip():
             raise ValueError("query must be a non-empty, non-whitespace string.")
         return v.strip()
+
+    @field_validator("brand")
+    @classmethod
+    def brand_normalize(cls, v: str | None) -> str | None:
+        """Strip whitespace and convert blank strings to None."""
+        if v is None:
+            return None
+        stripped = v.strip()
+        return stripped if stripped else None
+
     brand: str | None = Field(
         None,
         description=(

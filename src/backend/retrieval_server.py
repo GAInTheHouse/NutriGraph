@@ -125,7 +125,7 @@ def _get_hybrid_retriever() -> HybridNutritionRetriever:
     if _hybrid_retriever is None:
         _hybrid_retriever = HybridNutritionRetriever(
             model=_get_embedding_model(),
-            collection=_get_collection(),
+            collection=_get_collection_or_raise(),
         )
     return _hybrid_retriever
 
