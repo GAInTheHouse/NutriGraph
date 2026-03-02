@@ -118,7 +118,10 @@ class HybridNutritionRetriever:
         """Assemble a RetrievedIngredient from raw ChromaDB result fields."""
         base_score = score_override if score_override is not None else _distance_to_score(distance)
         # carbs may be stored under either key depending on the indexer version
-        carbs = _parse_float(meta.get("carbs_g") or meta.get("carbohydrates_g"))
+        carbs_raw = meta.get("carbs_g")
+        if carbs_raw is None and "carbohydrates_g" in meta:
+            carbs_raw = meta.get("carbohydrates_g")
+        carbs = _parse_float(carbs_raw)
         return RetrievedIngredient(
             id=str(doc_id),
             name=str(meta.get("exact_name") or meta.get("name") or ""),
