@@ -19,7 +19,7 @@ ChromaDB metadata schema (per document in 'nutrigraph_ingredients'):
     carbs_g         : float (stored as 'carbohydrates_g' in some rows – both
                               keys are checked defensively)
     fat_g           : float
-    source          : str   – 'usda_foundation' | 'usda_sr_legacy' | 'off'
+    source          : str   – 'usda_foundation' | 'usda_sr_legacy' | 'openfoodfacts'
 """
 
 import sys
@@ -86,14 +86,15 @@ class HybridNutritionRetriever:
         chroma_dir: Path | str = CHROMA_DIR,
         collection_name: str = COLLECTION_NAME,
         embedding_model_name: str = EMBEDDING_MODEL_NAME,
+        model: SentenceTransformer | None = None,
+        collection: chromadb.Collection | None = None,
     ) -> None:
         self._chroma_dir = Path(chroma_dir)
         self._collection_name = collection_name
         self._embedding_model_name = embedding_model_name
-
-        # Lazily-loaded singletons
-        self._model: SentenceTransformer | None = None
-        self._collection: chromadb.Collection | None = None
+        # Injected or lazily-loaded singletons
+        self._model: SentenceTransformer | None = model
+        self._collection: chromadb.Collection | None = collection
 
     # ── Private helpers ────────────────────────────────────────────────────────
 
@@ -203,7 +204,7 @@ class HybridNutritionRetriever:
 
         if brand is not None:
             results = self._search_with_brand(
-                collection, query_embedding, brand, top_k
+                collection, query_embedding, brand, query, top_k
             )
         else:
             results = self._search_semantic_boosted(
@@ -217,6 +218,7 @@ class HybridNutritionRetriever:
         collection: chromadb.Collection,
         query_embedding: list[float],
         brand: str,
+        query: str,
         top_k: int,
     ) -> list[RetrievedIngredient]:
         """
@@ -247,9 +249,9 @@ class HybridNutritionRetriever:
             # not exist in any document; treat this as "no results".
             pass
 
-        # Fallback: unfiltered semantic search
+        # Fallback: unfiltered semantic search (use original query, not brand)
         return self._search_semantic_boosted(
-            collection, query_embedding, brand, top_k
+            collection, query_embedding, query, top_k
         )
 
     def _search_semantic_boosted(

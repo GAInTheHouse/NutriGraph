@@ -123,7 +123,10 @@ def _get_collection() -> chromadb.Collection:
 def _get_hybrid_retriever() -> HybridNutritionRetriever:
     global _hybrid_retriever
     if _hybrid_retriever is None:
-        _hybrid_retriever = HybridNutritionRetriever()
+        _hybrid_retriever = HybridNutritionRetriever(
+            model=_get_embedding_model(),
+            collection=_get_collection(),
+        )
     return _hybrid_retriever
 
 
@@ -212,7 +215,7 @@ def retrieve_ingredients(payload: IngredientRetrievalRequest) -> IngredientRetri
     tags=["retrieval"],
     summary="Hybrid semantic + brand-filtered ingredient lookup",
 )
-async def retrieve_ingredient(payload: IngredientQuery) -> RetrievalResponse:
+def retrieve_ingredient(payload: IngredientQuery) -> RetrievalResponse:
     """
     Hybrid retrieval endpoint for the LangGraph clarification agent.
 
@@ -237,9 +240,10 @@ async def retrieve_ingredient(payload: IngredientQuery) -> RetrievalResponse:
     HTTP 404
         When the retriever returns no results at all (index may be empty or
         the query is too far from any indexed document).
+    HTTP 503
+        When the ingredient index is not available (e.g. index not built yet).
     HTTP 500
-        On ChromaDB initialisation or query errors (e.g. index not built yet,
-        corrupt data directory).
+        On other ChromaDB or retrieval errors.
     """
     try:
         retriever = _get_hybrid_retriever()
@@ -250,10 +254,10 @@ async def retrieve_ingredient(payload: IngredientQuery) -> RetrievalResponse:
         )
     except FileNotFoundError as exc:
         raise HTTPException(
-            status_code=500,
+            status_code=503,
             detail=(
-                "ChromaDB index not found. Run the indexing step first: "
-                "python scripts/dataset/index_ingredients.py"
+                "Ingredient index not available. Run the indexing step first: "
+                "python scripts/dataset/index_ingredients.py (after download and clean)."
             ),
         ) from exc
     except Exception as exc:

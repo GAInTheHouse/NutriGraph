@@ -1,7 +1,7 @@
 """
 Pydantic models for NutriGraph data structures.
 """
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import Optional
 import hashlib
 import random
@@ -103,6 +103,14 @@ class IngredientQuery(BaseModel):
     """
 
     query: str = Field(..., description="Free-text ingredient name or description.")
+
+    @field_validator("query")
+    @classmethod
+    def query_non_empty(cls, v: str) -> str:
+        """Reject blank or whitespace-only query strings."""
+        if not v or not v.strip():
+            raise ValueError("query must be a non-empty, non-whitespace string.")
+        return v.strip()
     brand: str | None = Field(
         None,
         description=(
@@ -123,9 +131,10 @@ class RetrievedIngredient(BaseModel):
         ...,
         ge=0.0,
         description=(
-            "Similarity score in (0, 1]: higher = closer match. "
-            "Derived from ChromaDB distance; may include a +0.15 keyword boost "
-            "when the query is a substring of the document's exact_name."
+            "Similarity score, typically in (0, 1]; may exceed 1.0 when the "
+            "+0.15 keyword boost applies. Higher = closer match. Derived from "
+            "ChromaDB distance; boosted when the query is a substring of the "
+            "document's exact_name."
         ),
     )
     calories: float | None = Field(None, description="Energy in kcal per 100 g.")
