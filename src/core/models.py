@@ -1,7 +1,7 @@
 """
 Pydantic models for NutriGraph data structures.
 """
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import Optional
 import hashlib
 import random
@@ -89,6 +89,80 @@ class DishAnalysisResponse(BaseModel):
         description="Per-ingredient breakdown with individual macros and confidence",
     )
 
+
+# ── Hybrid retrieval models (used by /api/v1/retrieve-ingredient) ─────────────
+
+class IngredientQuery(BaseModel):
+    """
+    Request payload for the hybrid ingredient retrieval endpoint.
+
+    When ``brand`` is supplied (extracted by the LangGraph clarification agent
+    after asking the user), the retriever applies a ChromaDB pre-filter so only
+    documents whose ``brand`` metadata matches are returned alongside the
+    semantic ranking.
+    """
+
+    query: str = Field(..., description="Free-text ingredient name or description.")
+
+    @field_validator("query")
+    @classmethod
+    def query_non_empty(cls, v: str) -> str:
+        """Reject blank or whitespace-only query strings."""
+        if not v or not v.strip():
+            raise ValueError("query must be a non-empty, non-whitespace string.")
+        return v.strip()
+
+    @field_validator("brand")
+    @classmethod
+    def brand_normalize(cls, v: str | None) -> str | None:
+        """Strip whitespace and convert blank strings to None."""
+        if v is None:
+            return None
+        stripped = v.strip()
+        return stripped if stripped else None
+
+    brand: str | None = Field(
+        None,
+        description=(
+            "Optional brand name provided by the LangGraph clarification agent. "
+            "When present, restricts results to documents with a matching brand."
+        ),
+    )
+    top_k: int = Field(5, ge=1, le=50, description="Maximum number of results to return.")
+
+
+class RetrievedIngredient(BaseModel):
+    """A single ingredient result returned by the hybrid retriever."""
+
+    id: str = Field(..., description="ChromaDB document ID.")
+    name: str = Field(..., description="Canonical ingredient name from the index.")
+    brand: str | None = Field(None, description="Brand name, if present in the index.")
+    similarity_score: float = Field(
+        ...,
+        ge=0.0,
+        description=(
+            "Similarity score, typically in (0, 1]; may exceed 1.0 when the "
+            "+0.15 keyword boost applies. Higher = closer match. Derived from "
+            "ChromaDB distance; boosted when the query is a substring of the "
+            "document's exact_name."
+        ),
+    )
+    calories: float | None = Field(None, description="Energy in kcal per 100 g.")
+    protein: float | None = Field(None, description="Protein in grams per 100 g.")
+    carbs: float | None = Field(None, description="Carbohydrates in grams per 100 g.")
+    fat: float | None = Field(None, description="Fat in grams per 100 g.")
+
+
+class RetrievalResponse(BaseModel):
+    """Response envelope returned by /api/v1/retrieve-ingredient."""
+
+    results: list[RetrievedIngredient] = Field(
+        default_factory=list,
+        description="Ordered list of ingredient matches, highest similarity first.",
+    )
+
+
+# ── Mock data helpers ──────────────────────────────────────────────────────────
 
 def generate_mock_ingredients(dish_name: str, count: int = 5) -> list[Ingredient]:
     """
