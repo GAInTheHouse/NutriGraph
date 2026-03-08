@@ -1,6 +1,7 @@
 """
 Pydantic models for NutriGraph data structures.
 """
+from enum import Enum
 from pydantic import BaseModel, Field
 from typing import Optional
 import hashlib
@@ -87,6 +88,66 @@ class DishAnalysisResponse(BaseModel):
     ingredients: list[AnalyzedIngredient] = Field(
         default_factory=list,
         description="Per-ingredient breakdown with individual macros and confidence",
+    )
+
+
+class MessageType(str, Enum):
+    """
+    Enum for the type of a single agent/user turn in the conversation.
+
+    Values:
+        question    – the agent is asking the user to clarify something.
+        answer      – the user's response to an agent question.
+        final_result – the agent has converged on a nutrition estimate.
+    """
+
+    question = "question"
+    answer = "answer"
+    final_result = "final_result"
+
+
+class ConversationTurn(BaseModel):
+    """
+    A single turn in the agentic conversation about a dish.
+
+    Attributes:
+        role:    Who produced this turn — ``"agent"`` or ``"user"``.
+        type:    Semantic type of the message (see :class:`MessageType`).
+        message: Human-readable text of the turn.
+        payload: Optional structured data attached to the turn (e.g. final macros
+                 returned alongside a ``final_result`` message).
+    """
+
+    role: str = Field(..., description="'agent' or 'user'")
+    type: str = Field(..., description="MessageType value: question | answer | final_result")
+    message: str = Field(..., description="Human-readable turn text")
+    payload: Optional[dict] = Field(None, description="Optional structured payload")
+
+
+class ConversationState(BaseModel):
+    """
+    Full state of an agentic clarification conversation for a single dish.
+
+    The agent appends :class:`ConversationTurn` objects to ``history`` as the
+    dialogue progresses.  Once the agent has gathered enough information it sets
+    ``final_result`` and emits a ``final_result`` turn — the UI should then stop
+    accepting new answers and render the nutritional breakdown.
+
+    Attributes:
+        dish_id:      Opaque identifier used by the backend to look up the LangGraph
+                      session (UUID assigned on ``/agent/start``).
+        dish_name:    Human-readable dish name, echoed from the initial request.
+        history:      Ordered list of all agent/user turns so far.
+        final_result: Populated once the agent converges; ``None`` while ongoing.
+    """
+
+    dish_id: str = Field(..., description="Backend session ID for this dish conversation")
+    dish_name: str = Field(..., description="Name of the dish being analysed")
+    history: list[ConversationTurn] = Field(
+        default_factory=list, description="Ordered conversation turns"
+    )
+    final_result: Optional[DishAnalysisResponse] = Field(
+        None, description="Converged nutritional estimate, present when the agent is done"
     )
 
 

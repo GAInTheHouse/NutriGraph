@@ -3,13 +3,14 @@ API client for NutriGraph backend service.
 
 Mock methods (estimate_nutrition, builder_generate_profile) remain for the text-search
 workflow. analyze_dish_image targets the real FastAPI image pipeline.
+start_dish_conversation / continue_dish_conversation drive the agentic loop.
 """
 from typing import Optional
 import logging
 
 import requests
 
-from .models import Dish, NutritionEstimate, DishAnalysisResponse
+from .models import Dish, NutritionEstimate, DishAnalysisResponse, ConversationState
 
 logger = logging.getLogger(__name__)
 
@@ -155,6 +156,118 @@ class NutriGraphClient:
 
         except Exception as exc:
             logger.exception("Unexpected error calling analyze-dish endpoint.")
+            raise NutriGraphAPIError(f"An unexpected error occurred: {exc}") from exc
+
+    def start_dish_conversation(self, initial_input: dict) -> ConversationState:
+        """
+        Begin an agentic clarification conversation for a dish.
+
+        POSTs ``initial_input`` to ``/api/v1/agent/start``.  The backend creates a
+        LangGraph session, runs the first retrieval + decision step, and returns a
+        :class:`ConversationState` whose ``history`` will contain either an initial
+        clarifying question (type ``"question"``) or an immediate final result (type
+        ``"final_result"``).
+
+        Args:
+            initial_input: A dict that must include ``dish_name`` and may optionally
+                include ``restaurant_name`` and ``image_analysis_id`` (the UUID
+                returned by a prior ``analyze_dish_image`` call).
+
+        Returns:
+            :class:`ConversationState` with the first agent turn already appended.
+
+        Raises:
+            NutriGraphAPIError: If the backend is unreachable, times out, or returns
+                a non-2xx HTTP status code.
+        """
+        url = f"{self.base_url}/api/v1/agent/start"
+        try:
+            response = requests.post(url, json=initial_input, timeout=60)
+            response.raise_for_status()
+            return ConversationState(**response.json())
+
+        except requests.exceptions.ConnectionError as exc:
+            logger.error("Backend unreachable at %s: %s", url, exc)
+            raise NutriGraphAPIError(
+                "Could not connect to the NutriGraph backend. "
+                "Please verify the server is running and the URL is correct."
+            ) from exc
+
+        except requests.exceptions.Timeout as exc:
+            logger.error("Request to %s timed out.", url)
+            raise NutriGraphAPIError(
+                "The request timed out. The backend may be overloaded — please try again."
+            ) from exc
+
+        except requests.exceptions.HTTPError as exc:
+            status_code = exc.response.status_code if exc.response is not None else None
+            logger.error("Backend returned HTTP %s for %s: %s", status_code, url, exc)
+            raise NutriGraphAPIError(
+                f"The backend returned an error (HTTP {status_code}). Please try again later.",
+                status_code=status_code,
+            ) from exc
+
+        except Exception as exc:
+            logger.exception("Unexpected error calling agent/start endpoint.")
+            raise NutriGraphAPIError(f"An unexpected error occurred: {exc}") from exc
+
+    def continue_dish_conversation(
+        self, dish_id: str, user_message: str
+    ) -> ConversationState:
+        """
+        Send a user reply to the agent and receive the updated conversation state.
+
+        POSTs ``{"dish_id": dish_id, "user_message": user_message}`` to
+        ``/api/v1/agent/continue``.  The backend resumes the LangGraph session
+        identified by ``dish_id``, appends the user turn, runs the next retrieval /
+        decision cycle, and returns the updated :class:`ConversationState`.
+
+        If the agent has gathered sufficient information the returned state will have
+        ``final_result`` populated and the last history turn will be of type
+        ``"final_result"``.
+
+        Args:
+            dish_id:      The opaque session identifier from the :class:`ConversationState`
+                          returned by :meth:`start_dish_conversation`.
+            user_message: The user's plain-text answer to the agent's most recent question.
+
+        Returns:
+            Updated :class:`ConversationState` with all new turns appended.
+
+        Raises:
+            NutriGraphAPIError: If the backend is unreachable, times out, or returns
+                a non-2xx HTTP status code.
+        """
+        url = f"{self.base_url}/api/v1/agent/continue"
+        payload = {"dish_id": dish_id, "user_message": user_message}
+        try:
+            response = requests.post(url, json=payload, timeout=60)
+            response.raise_for_status()
+            return ConversationState(**response.json())
+
+        except requests.exceptions.ConnectionError as exc:
+            logger.error("Backend unreachable at %s: %s", url, exc)
+            raise NutriGraphAPIError(
+                "Could not connect to the NutriGraph backend. "
+                "Please verify the server is running and the URL is correct."
+            ) from exc
+
+        except requests.exceptions.Timeout as exc:
+            logger.error("Request to %s timed out.", url)
+            raise NutriGraphAPIError(
+                "The request timed out. The backend may be overloaded — please try again."
+            ) from exc
+
+        except requests.exceptions.HTTPError as exc:
+            status_code = exc.response.status_code if exc.response is not None else None
+            logger.error("Backend returned HTTP %s for %s: %s", status_code, url, exc)
+            raise NutriGraphAPIError(
+                f"The backend returned an error (HTTP {status_code}). Please try again later.",
+                status_code=status_code,
+            ) from exc
+
+        except Exception as exc:
+            logger.exception("Unexpected error calling agent/continue endpoint.")
             raise NutriGraphAPIError(f"An unexpected error occurred: {exc}") from exc
 
     def health_check(self) -> bool:
