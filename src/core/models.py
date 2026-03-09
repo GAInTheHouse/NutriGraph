@@ -89,6 +89,17 @@ class DishAnalysisResponse(BaseModel):
         default_factory=list,
         description="Per-ingredient breakdown with individual macros and confidence",
     )
+    is_cached: bool = Field(
+        False,
+        description="True when the response was served from the database rather than generated live",
+    )
+    data_source: str = Field(
+        "ai_generated",
+        description=(
+            "Origin of this result: 'restaurant_verified' (published by the restaurant owner), "
+            "'diner_cached' (AI result coached by past diner records), or 'ai_generated' (fresh LLM call)."
+        ),
+    )
 
 
 class MessageType(str, Enum):

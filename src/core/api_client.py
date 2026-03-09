@@ -110,6 +110,8 @@ class NutriGraphClient:
         image_bytes: bytes,
         filename: str,
         restaurant_context: Optional[str] = None,
+        dish_name: Optional[str] = None,
+        place_id: Optional[str] = None,
     ) -> DishAnalysisResponse:
         """
         Send a dish photo to the Gemini vision pipeline and retrieve its nutritional breakdown.
@@ -118,23 +120,35 @@ class NutriGraphClient:
         is provided it is forwarded as a form field so the backend can enrich the Gemini
         prompt with establishment-specific knowledge.
 
+        When ``dish_name`` and/or ``place_id`` are provided, the backend checks the
+        database first.  A restaurant-verified record is returned immediately (fast path);
+        past diner records are injected into the Gemini prompt as coaching context.
+
         Args:
             image_bytes: Raw bytes of the uploaded image.
             filename: Original filename (used to infer MIME type on the server side).
             restaurant_context: Optional restaurant name (or ``"Home Cooked"``) selected
                 by the user during the upload step.
+            dish_name: Optional dish-name hint typed by the user.  Enables the DB cache
+                lookup on the backend.
+            place_id: Google Places place_id of the selected restaurant.
 
         Returns:
-            DishAnalysisResponse with totals and per-ingredient macros.
+            DishAnalysisResponse with totals, per-ingredient macros, ``is_cached``,
+            and ``data_source`` fields.
 
         Raises:
             NutriGraphAPIError: If the backend is unreachable, times out, or returns a
                 non-2xx status code.
         """
         url = f"{self.base_url}/api/v1/analyze-dish"
-        data = {}
+        data: dict = {}
         if restaurant_context:
             data["restaurant_context"] = restaurant_context
+        if dish_name:
+            data["dish_name"] = dish_name
+        if place_id:
+            data["restaurant_place_id"] = place_id
         try:
             response = requests.post(
                 url,
@@ -168,6 +182,106 @@ class NutriGraphClient:
 
         except Exception as exc:
             logger.exception("Unexpected error calling analyze-dish endpoint.")
+            raise NutriGraphAPIError(f"An unexpected error occurred: {exc}") from exc
+
+    def save_dish_result(
+        self,
+        analysis: DishAnalysisResponse,
+        place_id: Optional[str] = None,
+    ) -> None:
+        """
+        Explicitly persist a reviewed nutritional analysis as a diner record.
+
+        POSTs to ``/api/v1/diner/save-dish``.  This is called only when the user
+        clicks "Save Results" or "Save Refined Results" in the Diner UI — never
+        triggered automatically.
+
+        Args:
+            analysis: The :class:`DishAnalysisResponse` to save (may be the one-shot
+                result or the agent-refined result).
+            place_id: Google Places place_id if the dish was tagged to a restaurant.
+
+        Raises:
+            NutriGraphAPIError: If the backend is unreachable or returns an error.
+        """
+        url = f"{self.base_url}/api/v1/diner/save-dish"
+        payload = {
+            "analysis": analysis.model_dump(),
+            "place_id": place_id,
+        }
+        try:
+            response = requests.post(url, json=payload, timeout=15)
+            response.raise_for_status()
+
+        except requests.exceptions.ConnectionError as exc:
+            raise NutriGraphAPIError(
+                "Could not connect to the NutriGraph backend."
+            ) from exc
+        except requests.exceptions.Timeout as exc:
+            raise NutriGraphAPIError("The save request timed out.") from exc
+        except requests.exceptions.HTTPError as exc:
+            status_code = exc.response.status_code if exc.response is not None else None
+            raise NutriGraphAPIError(
+                f"Save failed (HTTP {status_code}).", status_code=status_code
+            ) from exc
+        except Exception as exc:
+            raise NutriGraphAPIError(f"An unexpected error occurred: {exc}") from exc
+
+    def publish_dish(
+        self,
+        dish_name: str,
+        place_id: str,
+        calories: float,
+        protein: float,
+        carbs: float,
+        fat: float,
+        ingredients: Optional[list] = None,
+    ) -> None:
+        """
+        Publish verified dish macros to the global catalog as a restaurant owner.
+
+        POSTs to ``/api/v1/restaurant/publish-dish``.  Once published, future diner
+        requests for the same ``(dish_name, place_id)`` pair are served from this
+        record without calling the LLM.
+
+        Args:
+            dish_name: Canonical name of the dish as it appears on the menu.
+            place_id:  Google Places place_id of the restaurant.
+            calories:  Total calories (kcal) per serving.
+            protein:   Total protein (g) per serving.
+            carbs:     Total carbohydrates (g) per serving.
+            fat:       Total fat (g) per serving.
+            ingredients: Optional list of per-ingredient dicts for the full breakdown.
+
+        Raises:
+            NutriGraphAPIError: If the backend is unreachable or returns an error.
+        """
+        url = f"{self.base_url}/api/v1/restaurant/publish-dish"
+        payload = {
+            "dish_name": dish_name,
+            "place_id": place_id,
+            "calories": calories,
+            "protein": protein,
+            "carbs": carbs,
+            "fat": fat,
+            "ingredients": ingredients or [],
+        }
+        try:
+            response = requests.post(url, json=payload, timeout=15)
+            response.raise_for_status()
+
+        except requests.exceptions.ConnectionError as exc:
+            raise NutriGraphAPIError(
+                "Could not connect to the NutriGraph backend."
+            ) from exc
+        except requests.exceptions.Timeout as exc:
+            raise NutriGraphAPIError("The publish request timed out.") from exc
+        except requests.exceptions.HTTPError as exc:
+            status_code = exc.response.status_code if exc.response is not None else None
+            raise NutriGraphAPIError(
+                f"Publish failed (HTTP {status_code}).", status_code=status_code
+            ) from exc
+        except Exception as exc:
             raise NutriGraphAPIError(f"An unexpected error occurred: {exc}") from exc
 
     def start_dish_conversation(self, initial_input: dict) -> ConversationState:

@@ -42,6 +42,9 @@ def render_restaurant(client: NutriGraphClient) -> None:
 
     # Section 1: Create / Edit Dish
     _render_dish_builder_section(client)
+
+    # Section 1b: Publish to Global Catalog (appears after a profile is generated)
+    _render_publish_section(client)
     
     st.divider()
     
@@ -64,6 +67,8 @@ def _render_restaurant_profile_section(client: NutriGraphClient) -> None:
     """
     st.session_state.setdefault("current_restaurant_profile", None)
     st.session_state.setdefault("restaurant_profile_results", [])
+    st.session_state.setdefault("last_generated_profile", None)
+    st.session_state.setdefault("dish_published", False)
 
     st.subheader("🏪 Restaurant Profile Setup")
 
@@ -270,6 +275,16 @@ def _handle_generate_profile(
         # Generate profile (currently mocked)
         estimate = client.builder_generate_profile(dish)
         
+        # Persist to session state so the Publish button can reference it
+        st.session_state.last_generated_profile = {
+            "dish_name": dish_name,
+            "calories": estimate.calories,
+            "protein": estimate.protein_g,
+            "carbs": estimate.carbs_g,
+            "fat": estimate.fat_g,
+        }
+        st.session_state.dish_published = False
+        
         # Display results
         st.success(f"Nutrition profile generated for '{dish_name}'!")
         
@@ -294,6 +309,76 @@ def _handle_generate_profile(
             
             # Clear ingredients for next dish
             st.session_state.restaurant_ingredients = []
+
+
+def _render_publish_section(client: NutriGraphClient) -> None:
+    """
+    Render the 'Publish to Global Catalog' panel.
+
+    Appears only after a nutrition profile has been generated in the current
+    session.  Lets the restaurant owner push their verified macros to the
+    shared database so future diner analyses for this dish are served from
+    the authoritative record rather than the LLM.
+    """
+    profile = st.session_state.get("last_generated_profile")
+    if not profile:
+        return
+
+    st.divider()
+    st.subheader("🌐 Publish to Global Catalog")
+    st.caption(
+        "Once you're happy with the macros above, publish them as the official "
+        "ground truth for this dish. Diners who order **"
+        + profile["dish_name"]
+        + "** at your restaurant will receive these verified numbers instantly."
+    )
+
+    already_published = st.session_state.get("dish_published", False)
+    if already_published:
+        st.success(
+            f"✅ **{profile['dish_name']}** has been published to the global catalog. "
+            "Future diner requests will be served from this verified record."
+        )
+        return
+
+    col_info, col_btn = st.columns([3, 1])
+    with col_info:
+        m1, m2, m3, m4 = st.columns(4)
+        with m1:
+            st.metric("🔥 Calories", f"{profile['calories']:.0f} kcal")
+        with m2:
+            st.metric("💪 Protein", f"{profile['protein']:.1f} g")
+        with m3:
+            st.metric("🌾 Carbs", f"{profile['carbs']:.1f} g")
+        with m4:
+            st.metric("🥑 Fat", f"{profile['fat']:.1f} g")
+
+    with col_btn:
+        st.write("")  # vertical alignment nudge
+        if st.button(
+            "🌐 Publish",
+            key="publish_dish_btn",
+            type="primary",
+            use_container_width=True,
+            help="Publish these macros as the restaurant-verified ground truth.",
+        ):
+            place_id = st.session_state.get("current_restaurant_profile", {}).get("place_id", "")
+            if not place_id:
+                st.error("Restaurant profile not found. Please re-select your restaurant.")
+                return
+            try:
+                client.publish_dish(
+                    dish_name=profile["dish_name"],
+                    place_id=place_id,
+                    calories=profile["calories"],
+                    protein=profile["protein"],
+                    carbs=profile["carbs"],
+                    fat=profile["fat"],
+                )
+                st.session_state.dish_published = True
+                st.rerun()
+            except Exception as exc:
+                st.error(f"⚠️ Publish failed: {exc}")
 
 
 def _render_catalog_section() -> None:
