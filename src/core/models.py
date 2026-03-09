@@ -3,7 +3,7 @@ Pydantic models for NutriGraph data structures.
 """
 from enum import Enum
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import Literal, Optional
 import hashlib
 import random
 
@@ -111,15 +111,17 @@ class ConversationTurn(BaseModel):
     A single turn in the agentic conversation about a dish.
 
     Attributes:
-        role:    Who produced this turn — ``"agent"`` or ``"user"``.
-        type:    Semantic type of the message (see :class:`MessageType`).
+        role:    Who produced this turn — exactly ``"agent"`` or ``"user"``.
+        type:    Semantic type of the message; must be a valid
+                 :class:`MessageType` value so that invalid payloads are
+                 rejected at parse time rather than silently accepted.
         message: Human-readable text of the turn.
         payload: Optional structured data attached to the turn (e.g. final macros
                  returned alongside a ``final_result`` message).
     """
 
-    role: str = Field(..., description="'agent' or 'user'")
-    type: str = Field(..., description="MessageType value: question | answer | final_result")
+    role: Literal["agent", "user"] = Field(..., description="Producer of this turn")
+    type: MessageType = Field(..., description="Semantic type of the message")
     message: str = Field(..., description="Human-readable turn text")
     payload: Optional[dict] = Field(None, description="Optional structured payload")
 

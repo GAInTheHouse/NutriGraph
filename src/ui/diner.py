@@ -274,6 +274,18 @@ def _init_clarification(analysis: DishAnalysisResponse) -> None:
         analysis: The :class:`DishAnalysisResponse` returned by the vision pipeline.
     """
     names = [ing.name for ing in analysis.ingredients]
+
+    # Short-circuit: if the vision pipeline returned no ingredients there is
+    # nothing for the clarification graph to work with.  Setting clar_active
+    # here would show a misleading "all ingredients meet threshold" banner.
+    if not names:
+        st.session_state.clar_active = False
+        return
+
+    # Reset ALL clarification state for the new dish — including the
+    # baseline/delta score lists so that metrics from a previous dish do
+    # not bleed into the new session when a second image is analyzed without
+    # clicking "Clear Analysis".
     st.session_state.clar_active = True
     st.session_state.clar_original_names = names
     st.session_state.clar_query_names = list(names)   # mutable copy
@@ -282,6 +294,8 @@ def _init_clarification(analysis: DishAnalysisResponse) -> None:
     st.session_state.clar_refined_result = None
     st.session_state.clar_error = None
     st.session_state.clar_state = None
+    st.session_state.clar_initial_scores = []   # reset baseline for this dish
+    st.session_state.clar_prev_scores = []      # reset round-over-round delta
     _run_clarification_graph()
 
 

@@ -11,8 +11,9 @@ High-level logic:
        and mark those ingredients as low-confidence.
     5. Otherwise, mark the state as done with high-confidence matches.
 
-This module does NOT integrate with the UI yet. It is intended to be called from
-FastAPI endpoints or scripts, and then wired into the Streamlit app later.
+This module is invoked directly from ``src/ui/diner.py`` after a successful
+dish image analysis.  It can also be called from FastAPI endpoints or CLI
+scripts via ``build_clarification_graph().invoke(...)``.
 """
 
 from __future__ import annotations
