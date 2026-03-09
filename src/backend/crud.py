@@ -1,9 +1,12 @@
 """
 CRUD helpers for the NutriGraph persistent dish-record store.
 
-All functions accept an open SQLAlchemy Session and leave transaction
-management to the caller (FastAPI endpoints use Depends(get_db) which
-commits/rolls back at request boundary).
+All functions accept an open SQLAlchemy Session.  Transaction management
+is the caller's responsibility — none of the helpers here call
+``db.commit()`` or ``db.refresh()``.  FastAPI endpoints must call
+``db.commit()`` (and optionally ``db.refresh(record)``) after any
+write operation, which keeps CRUD helpers composable and allows callers
+to batch multiple operations into a single atomic transaction.
 """
 import json
 from typing import Optional
@@ -78,7 +81,8 @@ def save_dish_record(
         source:    ``"diner"`` or ``"restaurant"``.
 
     Returns:
-        The newly created and committed :class:`DishRecord`.
+        The newly created (but not yet committed) :class:`DishRecord`.
+        The caller must call ``db.commit()`` to persist the row.
     """
     ingredients_payload = [
         ing.model_dump() for ing in (dish_data.ingredients or [])
@@ -95,6 +99,4 @@ def save_dish_record(
         ingredients_json=json.dumps(ingredients_payload),
     )
     db.add(record)
-    db.commit()
-    db.refresh(record)
     return record

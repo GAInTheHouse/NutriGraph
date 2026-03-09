@@ -8,7 +8,6 @@ import streamlit as st
 
 from ..core.models import Dish, Ingredient, NutritionEstimate
 from ..core.api_client import NutriGraphClient, NutriGraphAPIError
-from ..core.api_client import NutriGraphClient, NutriGraphAPIError
 from ..core.config import settings
 from .components import (
     render_macro_card,
@@ -17,6 +16,16 @@ from .components import (
     render_dish_catalog_table,
     export_catalog_to_csv
 )
+
+# Session-state keys that are logically scoped to a single restaurant.
+# They must be cleared whenever the active restaurant changes so that data
+# from one restaurant cannot leak into — or be published under — another.
+_RESTAURANT_SCOPED_KEYS: list[str] = [
+    "last_generated_profile",
+    "dish_published",
+    "restaurant_ingredients",
+    "catalog",
+]
 
 
 def render_restaurant(client: NutriGraphClient) -> None:
@@ -79,6 +88,8 @@ def _render_restaurant_profile_section(client: NutriGraphClient) -> None:
         if st.button("🔄 Change Restaurant", key="change_restaurant_profile"):
             st.session_state.current_restaurant_profile = None
             st.session_state.restaurant_profile_results = []
+            for key in _RESTAURANT_SCOPED_KEYS:
+                st.session_state.pop(key, None)
             st.rerun()
         return
 
@@ -132,6 +143,8 @@ def _render_restaurant_profile_section(client: NutriGraphClient) -> None:
         chosen = options[selected_idx]
 
         if st.button("Confirm Selection", key="restaurant_profile_confirm", type="primary"):
+            for key in _RESTAURANT_SCOPED_KEYS:
+                st.session_state.pop(key, None)
             st.session_state.current_restaurant_profile = {
                 "place_id": chosen["place_id"],
                 "name": chosen["name"],

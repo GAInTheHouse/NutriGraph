@@ -70,40 +70,55 @@ class NutriGraphClient:
     
     def builder_generate_profile(self, dish: Dish) -> NutritionEstimate:
         """
-        Generate nutrition profile for a dish (Restaurant workflow).
-        
-        In production, this will use the backend to calculate precise nutrition
-        based on the provided ingredient list.
-        
+        Generate a nutrition profile for a dish by sending its explicit ingredient
+        list to the backend builder endpoint.
+
+        Makes a POST to ``/api/v1/builder/generate``.  The backend looks up each
+        ingredient in the ChromaDB nutritional index, scales the per-100g values by
+        the ingredient's actual quantity and unit, sums to dish-level totals, and
+        returns a :class:`NutritionEstimate`.  No LLM is involved — the result is
+        deterministic and based on real nutritional data.
+
         Args:
-            dish: The dish with ingredients to calculate nutrition for.
-        
+            dish: The dish with a fully populated ingredient list (name, quantity, unit).
+
         Returns:
-            NutritionEstimate with calculated nutrition values.
+            NutritionEstimate with calculated macro totals and average confidence.
+
+        Raises:
+            NutriGraphAPIError: If the backend is unreachable, times out, or returns
+                a non-2xx status code.
         """
-        if self._mock_mode:
-            logger.debug(f"Mock mode: generating profile for '{dish.name}' with {len(dish.ingredients)} ingredients")
-            # For restaurant builder, use ingredient count to influence estimate
-            estimate = NutritionEstimate.mock_from_dish(dish)
-            
-            # Adjust based on ingredient count (more ingredients = higher calories typically)
-            multiplier = 1 + (len(dish.ingredients) * 0.05)
-            return NutritionEstimate(
-                calories=round(estimate.calories * multiplier, 1),
-                protein_g=round(estimate.protein_g * multiplier, 1),
-                carbs_g=round(estimate.carbs_g * multiplier, 1),
-                fat_g=round(estimate.fat_g * multiplier, 1),
-                confidence=min(0.95, estimate.confidence + 0.05)  # Higher confidence with explicit ingredients
-            )
-        
-        # TODO: Implement actual API call
-        # response = requests.post(
-        #     f"{self.base_url}/api/v1/builder/generate",
-        #     json=dish.model_dump()
-        # )
-        # response.raise_for_status()
-        # return NutritionEstimate(**response.json())
-        raise NotImplementedError("Backend API not yet implemented")
+        url = f"{self.base_url}/api/v1/builder/generate"
+        try:
+            response = requests.post(url, json=dish.model_dump(), timeout=30)
+            response.raise_for_status()
+            return NutritionEstimate(**response.json())
+
+        except requests.exceptions.ConnectionError as exc:
+            logger.error("Backend unreachable at %s: %s", url, exc)
+            raise NutriGraphAPIError(
+                "Could not connect to the NutriGraph backend. "
+                "Please verify the server is running and the URL is correct."
+            ) from exc
+
+        except requests.exceptions.Timeout as exc:
+            logger.error("Builder request to %s timed out.", url)
+            raise NutriGraphAPIError(
+                "The builder request timed out. Please try again."
+            ) from exc
+
+        except requests.exceptions.HTTPError as exc:
+            status_code = exc.response.status_code if exc.response is not None else None
+            logger.error("Backend returned HTTP %s for %s: %s", status_code, url, exc)
+            raise NutriGraphAPIError(
+                f"Builder endpoint returned an error (HTTP {status_code}). Please try again later.",
+                status_code=status_code,
+            ) from exc
+
+        except Exception as exc:
+            logger.exception("Unexpected error calling builder/generate endpoint.")
+            raise NutriGraphAPIError(f"An unexpected error occurred: {exc}") from exc
     
     def analyze_dish_image(
         self,

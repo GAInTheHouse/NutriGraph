@@ -22,7 +22,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from src.core.models import AnalyzedIngredient, DishAnalysisResponse, PlacesResponse  # noqa: E402
+from src.core.models import AnalyzedIngredient, Dish, DishAnalysisResponse, NutritionEstimate, PlacesResponse  # noqa: E402
 from src.ml.extract_ingredients import extract_ingredients_from_image, _HISTORICAL_CONTEXT_SNIPPET  # noqa: E402
 from src.backend.places_client import GooglePlacesClient, PlacesAPIError  # noqa: E402
 from src.backend.database import engine, get_db  # noqa: E402
@@ -258,6 +258,76 @@ def retrieve_ingredients(payload: IngredientRetrievalRequest) -> IngredientRetri
         out.append(IngredientRetrievalItem(query=query_text, matches=matches))
 
     return IngredientRetrievalResponse(results=out)
+
+
+# ── Restaurant builder: ingredient-list → NutritionEstimate ──────────────────
+
+# Maps unit strings (matching settings.DEFAULT_UNITS) to their gram equivalent.
+# Used to scale per-100g ChromaDB macro values by each ingredient's actual quantity.
+_UNIT_TO_GRAMS: Dict[str, float] = {
+    "g": 1.0,
+    "oz": 28.35,
+    "cup": 240.0,
+    "tbsp": 15.0,
+    "tsp": 5.0,
+    "piece": 100.0,
+    "ml": 1.0,
+}
+
+
+@app.post(
+    "/api/v1/builder/generate",
+    response_model=NutritionEstimate,
+    tags=["builder"],
+    summary="Calculate dish-level macros from an explicit ingredient list via ChromaDB RAG",
+)
+def builder_generate_profile(payload: Dish) -> NutritionEstimate:
+    """
+    Restaurant builder endpoint: given a :class:`Dish` with named ingredients,
+    quantities, and units, look up per-100g nutritional values from ChromaDB for
+    each ingredient, scale by the actual quantity, sum to dish-level totals, and
+    return a :class:`NutritionEstimate`.
+
+    Unlike the image-analysis pipeline, no LLM is involved — the calculation is
+    deterministic and reproducible from the ingredient list.
+
+    Confidence is the average of the individual ChromaDB retrieval confidence
+    scores, giving the restaurant owner a signal about how well each ingredient
+    was matched in the index.
+    """
+    collection = _get_collection_or_raise()
+    embed_model = _get_embedding_model()
+
+    ingredient_names = [ing.name.strip() for ing in payload.ingredients if ing.name.strip()]
+    nutrition_map = _lookup_nutrition(ingredient_names, collection, embed_model)
+
+    total_cal = total_pro = total_carb = total_fat = 0.0
+    confidence_scores: List[float] = []
+
+    for ing in payload.ingredients:
+        name = ing.name.strip()
+        if not name:
+            continue
+        n = nutrition_map.get(name, {})
+        # Scale the per-100g ChromaDB values by the actual quantity in grams.
+        factor = ing.quantity * _UNIT_TO_GRAMS.get(ing.unit, 1.0) / 100.0
+        total_cal   += n.get("energy_kcal",     0.0) * factor
+        total_pro   += n.get("protein_g",        0.0) * factor
+        total_carb  += n.get("carbohydrates_g",  0.0) * factor
+        total_fat   += n.get("fat_g",            0.0) * factor
+        confidence_scores.append(n.get("confidence", 0.0))
+
+    avg_confidence = (
+        sum(confidence_scores) / len(confidence_scores) if confidence_scores else 0.0
+    )
+
+    return NutritionEstimate(
+        calories=round(total_cal, 1),
+        protein_g=round(total_pro, 1),
+        carbs_g=round(total_carb, 1),
+        fat_g=round(total_fat, 1),
+        confidence=round(avg_confidence, 4),
+    )
 
 
 # ── Dish image analysis ───────────────────────────────────────────────────────
@@ -506,6 +576,7 @@ def save_diner_dish(
     control over when their data enters the database.
     """
     save_dish_record(db, payload.analysis, payload.place_id, source="diner")
+    db.commit()
     return {"status": "saved"}
 
 
@@ -542,5 +613,6 @@ def publish_restaurant_dish(
         data_source="restaurant_verified",
     )
     save_dish_record(db, analysis, payload.place_id, source="restaurant")
+    db.commit()
     return {"status": "published"}
 
