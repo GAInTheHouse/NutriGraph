@@ -49,16 +49,8 @@ def get_dish_record(
         DishRecord.restaurant_place_id == place_id,
     )
 
-    # Restaurant-verified rows first so callers can short-circuit on index 0.
-    records = (
-        query
-        .order_by(
-            # "restaurant" sorts before "diner" alphabetically — that happens
-            # to be wrong, so use an explicit CASE-style sort via Python after
-            # fetching (small result sets make this fine for a course project).
-        )
-        .all()
-    )
+    # Fetch all matching records; ordering is applied in Python below.
+    records = query.all()
 
     # Sort in Python: restaurant rows first, then by created_at descending.
     records.sort(key=lambda r: (0 if r.source == "restaurant" else 1, -r.created_at.timestamp()))
