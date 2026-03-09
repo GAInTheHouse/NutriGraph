@@ -51,10 +51,19 @@ def _load_catalog_from_db(client: NutriGraphClient) -> None:
     st.session_state.setdefault("catalog", [])
     try:
         dishes = client.get_restaurant_dishes(place_id)
+    except NutriGraphAPIError as e:
+        # Surface a user-visible error and allow retries on subsequent rerenders.
+        st.error(
+            "We couldn't load your existing catalog right now. "
+            "You can still create dishes; we'll retry loading automatically."
+        )
+        st.session_state["catalog_load_error"] = str(e)
+        return
+    else:
         st.session_state.catalog = dishes
-    except Exception:
-        pass
-    st.session_state.catalog_loaded_for = place_id
+        st.session_state.catalog_loaded_for = place_id
+        # Clear any previous load error on success.
+        st.session_state.pop("catalog_load_error", None)
 
 
 def render_restaurant(client: NutriGraphClient) -> None:
