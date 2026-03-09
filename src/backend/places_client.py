@@ -17,18 +17,24 @@ from src.core.models import PlaceSearchResult  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
-_PLACES_TEXT_SEARCH_URL = (
-    "https://maps.googleapis.com/maps/api/place/textsearch/json"
-)
+# Places API (New) — POST endpoint
+_PLACES_TEXT_SEARCH_URL = "https://places.googleapis.com/v1/places:searchText"
+
+# Only request the fields we actually use; field masking controls billing tier.
+_FIELD_MASK = "places.id,places.displayName,places.formattedAddress"
 
 
 class PlacesAPIError(Exception):
-    """Raised when the Google Places API returns an unexpected status."""
+    """Raised when the Google Places API (New) returns an unexpected error."""
 
 
 class GooglePlacesClient:
     """
-    Thin wrapper around the Google Places Text Search API.
+    Thin wrapper around the Google Places API (New) Text Search endpoint.
+
+    Uses ``POST https://places.googleapis.com/v1/places:searchText`` with the
+    API key in the ``X-Goog-Api-Key`` header and a ``X-Goog-FieldMask`` to
+    limit billed fields to only what NutriGraph needs.
 
     Initialisation reads ``GOOGLE_PLACES_API_KEY`` from the environment.
     A ``ValueError`` is raised immediately if the key is absent so callers
@@ -48,8 +54,9 @@ class GooglePlacesClient:
         """
         Search for restaurant establishments matching *query*.
 
-        Calls the Places Text Search endpoint with ``type=restaurant`` so
-        results are filtered to food/dining establishments.
+        Calls the Places API (New) Text Search endpoint with
+        ``"includedType": "restaurant"`` so results are filtered to
+        food/dining establishments.
 
         Args:
             query: Free-text search string (e.g. "Shake Shack New York").
@@ -57,28 +64,31 @@ class GooglePlacesClient:
         Returns:
             List of :class:`PlaceSearchResult` objects (may be empty).
             Returns an empty list — rather than raising — on network errors
-            or when the API signals ``ZERO_RESULTS``.
+            or when no results are returned.
 
         Raises:
-            PlacesAPIError: If the Places API returns a terminal error status
-                (``REQUEST_DENIED``, ``INVALID_REQUEST``, ``OVER_QUERY_LIMIT``).
+            PlacesAPIError: If the Places API returns a 4xx/5xx error response.
         """
         if not query or not query.strip():
             return []
 
-        params = {
-            "query": query.strip(),
-            "type": "restaurant",
-            "key": self._api_key,
+        headers = {
+            "Content-Type": "application/json",
+            "X-Goog-Api-Key": self._api_key,
+            "X-Goog-FieldMask": _FIELD_MASK,
+        }
+        body = {
+            "textQuery": query.strip(),
+            "includedType": "restaurant",
         }
 
         try:
-            response = requests.get(
+            response = requests.post(
                 _PLACES_TEXT_SEARCH_URL,
-                params=params,
+                headers=headers,
+                json=body,
                 timeout=10,
             )
-            response.raise_for_status()
         except requests.exceptions.Timeout:
             logger.warning("Google Places request timed out for query=%r", query)
             return []
@@ -86,29 +96,27 @@ class GooglePlacesClient:
             logger.error("Google Places HTTP error for query=%r: %s", query, exc)
             return []
 
-        payload = response.json()
-        status: str = payload.get("status", "")
-
-        if status == "ZERO_RESULTS":
-            return []
-
-        if status not in ("OK",):
-            error_message = payload.get("error_message", "No details provided.")
+        if not response.ok:
+            payload = response.json() if response.content else {}
+            error_message = (
+                payload.get("error", {}).get("message", response.text)
+            )
             logger.error(
-                "Google Places API returned status=%r for query=%r: %s",
-                status,
+                "Google Places API returned HTTP %s for query=%r: %s",
+                response.status_code,
                 query,
                 error_message,
             )
             raise PlacesAPIError(
-                f"Google Places API error ({status}): {error_message}"
+                f"Google Places API error (HTTP {response.status_code}): {error_message}"
             )
 
+        payload = response.json()
         results: list[PlaceSearchResult] = []
-        for item in payload.get("results", []):
-            place_id = item.get("place_id", "")
-            name = item.get("name", "")
-            address = item.get("formatted_address", "")
+        for item in payload.get("places", []):
+            place_id = item.get("id", "")
+            name = item.get("displayName", {}).get("text", "")
+            address = item.get("formattedAddress", "")
             if place_id and name:
                 results.append(
                     PlaceSearchResult(
