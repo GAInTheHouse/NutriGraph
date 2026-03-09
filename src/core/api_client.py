@@ -299,6 +299,44 @@ class NutriGraphClient:
         except Exception as exc:
             raise NutriGraphAPIError(f"An unexpected error occurred: {exc}") from exc
 
+    def get_restaurant_dishes(self, place_id: str) -> list[dict]:
+        """
+        Fetch all restaurant-verified dishes for a given place_id from the DB.
+
+        GETs ``/api/v1/restaurant/dishes``.  Called when the Restaurant UI loads
+        a profile so the catalog is populated from persisted records rather than
+        starting empty every session.
+
+        Args:
+            place_id: Google Places place_id of the restaurant.
+
+        Returns:
+            List of dish dicts with keys: name, serving_size, ingredient_count,
+            calories, protein_g, carbs_g, fat_g, confidence.
+
+        Raises:
+            NutriGraphAPIError: If the backend is unreachable or returns an error.
+        """
+        url = f"{self.base_url}/api/v1/restaurant/dishes"
+        try:
+            response = requests.get(url, params={"place_id": place_id}, timeout=10)
+            response.raise_for_status()
+            return response.json().get("dishes", [])
+
+        except requests.exceptions.ConnectionError as exc:
+            raise NutriGraphAPIError(
+                "Could not connect to the NutriGraph backend."
+            ) from exc
+        except requests.exceptions.Timeout as exc:
+            raise NutriGraphAPIError("The dishes request timed out.") from exc
+        except requests.exceptions.HTTPError as exc:
+            status_code = exc.response.status_code if exc.response is not None else None
+            raise NutriGraphAPIError(
+                f"Failed to load catalog (HTTP {status_code}).", status_code=status_code
+            ) from exc
+        except Exception as exc:
+            raise NutriGraphAPIError(f"An unexpected error occurred: {exc}") from exc
+
     def start_dish_conversation(self, initial_input: dict) -> ConversationState:
         """
         Begin an agentic clarification conversation for a dish.

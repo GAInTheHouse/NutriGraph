@@ -64,6 +64,33 @@ def get_dish_record(
     return records
 
 
+def get_dishes_for_place(
+    db: Session,
+    place_id: str,
+    source: str = "restaurant",
+) -> list[DishRecord]:
+    """
+    Return all saved records for a given restaurant place-ID and source.
+
+    Args:
+        db:       Active SQLAlchemy session.
+        place_id: Google Places place_id for the restaurant.
+        source:   ``"restaurant"`` or ``"diner"``; defaults to ``"restaurant"``.
+
+    Returns:
+        List of matching :class:`DishRecord` instances ordered by most recent first.
+    """
+    return (
+        db.query(DishRecord)
+        .filter(
+            DishRecord.restaurant_place_id == place_id,
+            DishRecord.source == source,
+        )
+        .order_by(DishRecord.created_at.desc())
+        .all()
+    )
+
+
 def save_dish_record(
     db: Session,
     dish_data,  # DishAnalysisResponse — avoid circular import by typing loosely

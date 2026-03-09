@@ -25,7 +25,36 @@ _RESTAURANT_SCOPED_KEYS: list[str] = [
     "dish_published",
     "restaurant_ingredients",
     "catalog",
+    "catalog_loaded_for",
 ]
+
+
+def _load_catalog_from_db(client: NutriGraphClient) -> None:
+    """
+    Populate ``st.session_state.catalog`` from the DB for the active restaurant.
+
+    Runs at most once per confirmed profile per session: the ``catalog_loaded_for``
+    key tracks which place_id we last loaded so repeated Streamlit rerenders don't
+    trigger redundant network calls.
+    """
+    profile = st.session_state.get("current_restaurant_profile")
+    if not profile:
+        return
+
+    place_id = profile.get("place_id", "")
+    if not place_id:
+        return
+
+    if st.session_state.get("catalog_loaded_for") == place_id:
+        return
+
+    st.session_state.setdefault("catalog", [])
+    try:
+        dishes = client.get_restaurant_dishes(place_id)
+        st.session_state.catalog = dishes
+    except Exception:
+        pass
+    st.session_state.catalog_loaded_for = place_id
 
 
 def render_restaurant(client: NutriGraphClient) -> None:
@@ -49,6 +78,10 @@ def render_restaurant(client: NutriGraphClient) -> None:
             "Once you've selected your business, the dish builder and catalog will appear here."
         )
         return
+
+    # Load the persisted catalog from the DB the first time a profile is confirmed
+    # in this session (guarded so we don't re-fetch on every Streamlit rerender).
+    _load_catalog_from_db(client)
 
     # Section 1: Create / Edit Dish
     _render_dish_builder_section(client)
@@ -390,6 +423,24 @@ def _render_publish_section(client: NutriGraphClient) -> None:
                     fat=profile["fat"],
                 )
                 st.session_state.dish_published = True
+                # Add to the local catalog immediately so it shows up without a
+                # full session reload, and force catalog_loaded_for to refresh
+                # from the DB next render so the entry survives future sessions.
+                catalog_entry = {
+                    "name": profile["dish_name"],
+                    "serving_size": None,
+                    "ingredient_count": None,
+                    "calories": profile["calories"],
+                    "protein_g": profile["protein"],
+                    "carbs_g": profile["carbs"],
+                    "fat_g": profile["fat"],
+                    "confidence": None,
+                }
+                st.session_state.setdefault("catalog", [])
+                existing_names = {d.get("name") for d in st.session_state.catalog}
+                if profile["dish_name"] not in existing_names:
+                    st.session_state.catalog.append(catalog_entry)
+                st.session_state.catalog_loaded_for = None
                 st.rerun()
             except Exception as exc:
                 st.error(f"⚠️ Publish failed: {exc}")

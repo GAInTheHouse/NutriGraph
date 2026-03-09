@@ -27,7 +27,7 @@ from src.ml.extract_ingredients import extract_ingredients_from_image, _HISTORIC
 from src.backend.places_client import GooglePlacesClient, PlacesAPIError  # noqa: E402
 from src.backend.database import engine, get_db  # noqa: E402
 from src.backend.db_models import Base, DishRecord  # noqa: E402
-from src.backend.crud import get_dish_record, save_dish_record  # noqa: E402
+from src.backend.crud import get_dish_record, get_dishes_for_place, save_dish_record  # noqa: E402
 
 
 PROJECT_ROOT = _PROJECT_ROOT
@@ -615,4 +615,36 @@ def publish_restaurant_dish(
     save_dish_record(db, analysis, payload.place_id, source="restaurant")
     db.commit()
     return {"status": "published"}
+
+
+# ── Restaurant: list published dishes ─────────────────────────────────────────
+
+@app.get(
+    "/api/v1/restaurant/dishes",
+    tags=["restaurant"],
+    summary="List all restaurant-verified dishes for a given place_id",
+)
+def list_restaurant_dishes(
+    place_id: str = Query(..., description="Google Places place_id for the restaurant"),
+    db: Session = Depends(get_db),
+) -> Dict:
+    """
+    Returns all ``source="restaurant"`` records stored for the given place_id.
+    Used by the Restaurant UI to reload the catalog across sessions.
+    """
+    records = get_dishes_for_place(db, place_id, source="restaurant")
+    dishes = [
+        {
+            "name": r.dish_name,
+            "serving_size": None,
+            "ingredient_count": len(json.loads(r.ingredients_json or "[]")),
+            "calories": r.calories,
+            "protein_g": r.protein,
+            "carbs_g": r.carbs,
+            "fat_g": r.fat,
+            "confidence": None,
+        }
+        for r in records
+    ]
+    return {"dishes": dishes}
 
