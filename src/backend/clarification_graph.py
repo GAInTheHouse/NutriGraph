@@ -11,8 +11,9 @@ High-level logic:
        and mark those ingredients as low-confidence.
     5. Otherwise, mark the state as done with high-confidence matches.
 
-This module does NOT integrate with the UI yet. It is intended to be called from
-FastAPI endpoints or scripts, and then wired into the Streamlit app later.
+This module is invoked directly from ``src/ui/diner.py`` after a successful
+dish image analysis.  It can also be called from FastAPI endpoints or CLI
+scripts via ``build_clarification_graph().invoke(...)``.
 """
 
 from __future__ import annotations
@@ -22,6 +23,11 @@ from typing import Dict, List, Optional, TypedDict
 from langgraph.graph import END, StateGraph
 
 from .retrieval_server import _get_collection, _get_embedding_model
+
+# Confidence threshold used by the clarification graph.
+# Ingredients whose best combined score (vector + lexical) falls below this
+# value are considered low-confidence and will trigger a clarifying question.
+DEFAULT_THRESHOLD: float = 0.70
 
 
 class RetrievalMatch(TypedDict, total=False):
@@ -176,7 +182,7 @@ def retrieve_node(state: ClarificationState) -> ClarificationState:
 
 
 def decide_low_conf_node(
-    state: ClarificationState, default_threshold: float = 0.7
+    state: ClarificationState, default_threshold: float = DEFAULT_THRESHOLD
 ) -> ClarificationState:
     """
     Node: determine which ingredients are low-confidence based on threshold.
@@ -230,7 +236,7 @@ def ask_node(state: ClarificationState) -> ClarificationState:
     return state
 
 
-def build_clarification_graph(default_threshold: float = 0.7):
+def build_clarification_graph(default_threshold: float = DEFAULT_THRESHOLD):
     """
     Build and compile the clarification LangGraph.
 
