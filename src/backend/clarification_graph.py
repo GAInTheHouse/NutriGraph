@@ -181,7 +181,7 @@ def retrieve_node(state: ClarificationState) -> ClarificationState:
 
 
 def decide_low_conf_node(
-    state: ClarificationState, default_threshold: float = 0.7
+    state: ClarificationState, default_threshold: float = DEFAULT_THRESHOLD
 ) -> ClarificationState:
     """
     Node: determine which ingredients are low-confidence based on threshold.
@@ -235,7 +235,7 @@ def ask_node(state: ClarificationState) -> ClarificationState:
     return state
 
 
-def build_clarification_graph(default_threshold: float = 0.7):
+def build_clarification_graph(default_threshold: float = DEFAULT_THRESHOLD):
     """
     Build and compile the clarification LangGraph.
 

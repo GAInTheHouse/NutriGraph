@@ -324,16 +324,25 @@ def _run_clarification_graph() -> None:
         if not st.session_state.get("clar_initial_scores"):
             st.session_state.clar_initial_scores = list(result.get("scores", []))
 
-        if not result.get("low_conf_indices"):
-            # All ingredients are above the threshold — we are done.
+        # Treat as converged only when the graph EXPLICITLY returned an empty
+        # low_conf_indices list — a missing key means something went wrong.
+        low_conf = result.get("low_conf_indices")
+        if low_conf is not None and len(low_conf) == 0:
             st.session_state.clar_done = True
             refined = _build_refined_result(
                 st.session_state.clar_original_names, result
             )
             st.session_state.clar_refined_result = refined.model_dump()
+        elif low_conf is None:
+            # Graph ran but decision node never set low_conf_indices — unexpected state.
+            st.session_state.clar_error = (
+                "The clarification graph returned an incomplete state "
+                "(low_conf_indices missing). This usually means ChromaDB returned "
+                "no results. Check that the ingredient index is built and non-empty."
+            )
 
     except Exception as exc:
-        st.session_state.clar_active = False
+        # Keep clar_active = True so the section still renders and shows the error.
         st.session_state.clar_error = (
             f"{type(exc).__name__}: {exc}. "
             "Make sure the ChromaDB index has been built "
@@ -582,9 +591,12 @@ def _render_clarification_section() -> None:
     low_conf_indices: list[int] = clar_state.get("low_conf_indices", [])
 
     if not questions:
-        # Graph ran but produced no questions and no convergence — edge case.
-        st.session_state.clar_done = True
-        st.rerun()
+        # The graph routed to 'ask' but produced no question text — unexpected.
+        st.warning(
+            "⚠️ The agent identified low-confidence ingredients but could not "
+            "generate clarifying questions. Check that `low_conf_ingredients` is "
+            "populated in the graph state."
+        )
         return
 
     # Always surface the FIRST pending question; the rest follow in subsequent reruns.
