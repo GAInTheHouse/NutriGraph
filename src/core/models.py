@@ -153,6 +153,18 @@ class ConversationState(BaseModel):
     )
 
 
+class PlaceSearchResult(BaseModel):
+    """A single restaurant result from the Google Places API."""
+    place_id: str = Field(..., description="Unique Google Places identifier")
+    name: str = Field(..., description="Display name of the establishment")
+    address: str = Field(..., description="Formatted street address")
+
+
+class PlacesResponse(BaseModel):
+    """Response wrapper for a Places search query."""
+    results: list[PlaceSearchResult] = Field(default_factory=list)
+
+
 def generate_mock_ingredients(dish_name: str, count: int = 5) -> list[Ingredient]:
     """
     Generate mock ingredients for a dish based on its name.

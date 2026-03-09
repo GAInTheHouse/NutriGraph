@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 import chromadb
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field, field_validator
 from sentence_transformers import SentenceTransformer
 
@@ -20,8 +20,9 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from src.core.models import AnalyzedIngredient, DishAnalysisResponse  # noqa: E402
+from src.core.models import AnalyzedIngredient, DishAnalysisResponse, PlacesResponse  # noqa: E402
 from src.ml.extract_ingredients import extract_ingredients_from_image  # noqa: E402
+from src.backend.places_client import GooglePlacesClient, PlacesAPIError  # noqa: E402
 
 
 PROJECT_ROOT = _PROJECT_ROOT
@@ -131,6 +132,45 @@ def _get_collection_or_raise() -> chromadb.Collection:
 def health_check() -> Dict[str, str]:
     """Simple health check endpoint."""
     return {"status": "ok"}
+
+
+@app.get(
+    "/api/v1/places/search",
+    response_model=PlacesResponse,
+    tags=["places"],
+    summary="Search for restaurants via the Google Places API",
+)
+def search_places(
+    query: str = Query(..., min_length=1, description="Restaurant name or search phrase"),
+) -> PlacesResponse:
+    """
+    Proxy the Google Places Text Search API and return matching restaurant establishments.
+
+    Results are filtered to ``type=restaurant`` so non-food businesses are excluded.
+    Requires ``GOOGLE_PLACES_API_KEY`` to be set in the environment; returns HTTP 503
+    with a clear message when the key is absent.
+    """
+    try:
+        places_client = GooglePlacesClient()
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Google Places integration is not configured. "
+                "Set GOOGLE_PLACES_API_KEY in your environment or .env file."
+            ),
+        ) from exc
+
+    try:
+        results = places_client.search_restaurants(query)
+    except PlacesAPIError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500, detail=f"Unexpected error during Places search: {exc}"
+        ) from exc
+
+    return PlacesResponse(results=results)
 
 
 @app.post(
@@ -256,11 +296,21 @@ def _lookup_nutrition(
 )
 async def analyze_dish(
     file: UploadFile = File(..., description="JPEG or PNG photo of the dish to analyze"),
+    restaurant_context: Optional[str] = Form(
+        None,
+        description=(
+            "Optional restaurant name (or 'Home Cooked') selected by the user. "
+            "When provided, the Gemini prompt is augmented with establishment context "
+            "to improve dish-name and ingredient accuracy."
+        ),
+    ),
 ) -> DishAnalysisResponse:
     """
     Full image-to-nutrition pipeline:
 
     1. **Gemini 2.5 Flash Lite** identifies the dish name and ingredient list from the photo.
+       If ``restaurant_context`` is supplied the prompt is enriched with that context so the
+       model can tailor its response to the specific establishment.
     2. **ChromaDB RAG retrieval** looks up the best nutritional match for each ingredient.
     3. Returns a :class:`DishAnalysisResponse` with per-ingredient macros and dish-level totals.
 
@@ -273,9 +323,16 @@ async def analyze_dish(
 
     mime_type = file.content_type or "image/jpeg"
 
+    # Normalise empty string to None so the prompt builder treats it as absent
+    resolved_context = restaurant_context.strip() if restaurant_context else None
+
     # ── 2. Gemini: extract dish name + ingredients ────────────────────────────
     try:
-        dish_info = extract_ingredients_from_image(image_bytes, mime_type=mime_type)
+        dish_info = extract_ingredients_from_image(
+            image_bytes,
+            mime_type=mime_type,
+            restaurant_context=resolved_context,
+        )
     except ValueError as exc:
         # Missing API key or unparseable model response
         raise HTTPException(status_code=422, detail=str(exc)) from exc

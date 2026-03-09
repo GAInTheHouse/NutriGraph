@@ -7,7 +7,7 @@ and generating nutrition profiles.
 import streamlit as st
 
 from ..core.models import Dish, Ingredient, NutritionEstimate
-from ..core.api_client import NutriGraphClient
+from ..core.api_client import NutriGraphClient, NutriGraphAPIError
 from ..core.config import settings
 from .components import (
     render_macro_card,
@@ -27,7 +27,19 @@ def render_restaurant(client: NutriGraphClient) -> None:
     """
     st.header("🍳 Restaurant View")
     st.caption("Create dishes and generate nutrition profiles for your menu")
-    
+
+    # Section 0: Restaurant Profile Setup (must complete before building catalog)
+    _render_restaurant_profile_section(client)
+
+    st.divider()
+
+    if not st.session_state.get("current_restaurant_profile"):
+        st.info(
+            "Search for your restaurant above to get started. "
+            "Once you've selected your business, the dish builder and catalog will appear here."
+        )
+        return
+
     # Section 1: Create / Edit Dish
     _render_dish_builder_section(client)
     
@@ -40,6 +52,85 @@ def render_restaurant(client: NutriGraphClient) -> None:
     
     # Section 3: Export
     _render_export_section()
+
+
+def _render_restaurant_profile_section(client: NutriGraphClient) -> None:
+    """
+    Two-step Google Places search that lets a restaurant owner find and claim
+    their business before building the nutrition catalog.
+
+    Stores ``{"place_id": ..., "name": ...}`` in
+    ``st.session_state.current_restaurant_profile`` once a location is confirmed.
+    """
+    st.session_state.setdefault("current_restaurant_profile", None)
+    st.session_state.setdefault("restaurant_profile_results", [])
+
+    st.subheader("🏪 Restaurant Profile Setup")
+
+    profile = st.session_state.get("current_restaurant_profile")
+    if profile:
+        st.success(f"Managing catalog for: **{profile['name']}**")
+        if st.button("🔄 Change Restaurant", key="change_restaurant_profile"):
+            st.session_state.current_restaurant_profile = None
+            st.session_state.restaurant_profile_results = []
+            st.rerun()
+        return
+
+    st.caption(
+        "Search for your restaurant by name to set the active profile. "
+        "The dish builder and catalog will be enabled once a location is confirmed."
+    )
+
+    search_col, btn_col = st.columns([3, 1])
+    with search_col:
+        profile_query = st.text_input(
+            "Restaurant name",
+            placeholder="e.g., The Spotted Pig New York",
+            key="restaurant_profile_query",
+        )
+    with btn_col:
+        st.write("")  # vertical alignment nudge
+        search_clicked = st.button(
+            "Search",
+            key="restaurant_profile_search",
+            use_container_width=True,
+        )
+
+    if search_clicked:
+        if not profile_query.strip():
+            st.warning("Enter a restaurant name to search.")
+        else:
+            with st.spinner("Searching for your restaurant…"):
+                try:
+                    results = client.search_restaurants(profile_query)
+                    st.session_state.restaurant_profile_results = results
+                    st.session_state.pop("restaurant_profile_selectbox", None)
+                    if not results:
+                        st.info(
+                            "No restaurants found matching that name. "
+                            "Try including the city or neighbourhood."
+                        )
+                except NutriGraphAPIError as exc:
+                    st.error(f"Restaurant search failed: {exc}")
+                    st.session_state.restaurant_profile_results = []
+
+    options = st.session_state.restaurant_profile_results
+    if options:
+        labels = [f"{p['name']} — {p['address']}" for p in options]
+        selected_idx = st.selectbox(
+            "Select your business",
+            options=range(len(labels)),
+            format_func=lambda i: labels[i],
+            key="restaurant_profile_selectbox",
+        )
+        chosen = options[selected_idx]
+
+        if st.button("Confirm Selection", key="restaurant_profile_confirm", type="primary"):
+            st.session_state.current_restaurant_profile = {
+                "place_id": chosen["place_id"],
+                "name": chosen["name"],
+            }
+            st.rerun()
 
 
 def _render_dish_builder_section(client: NutriGraphClient) -> None:

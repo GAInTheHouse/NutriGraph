@@ -14,7 +14,7 @@ import requests
 
 # ── Prompts ───────────────────────────────────────────────────────────────────
 
-INGREDIENTS_PROMPT = """You are an expert culinary image analyzer. Look at this food image and:
+_BASE_INGREDIENTS_PROMPT = """You are an expert culinary image analyzer. Look at this food image and:
 1. Identify the name of the dish (e.g. "Spaghetti Carbonara", "Chicken Caesar Salad").
 2. List the exact ingredients you can identify in the dish (e.g., vegetables, proteins, sauces, herbs, grains). Use short, clear names.
 
@@ -22,6 +22,25 @@ CRITICAL INSTRUCTION: You must respond with ONLY a valid JSON object. Do not inc
 
 Use this exact format:
 {"dish_name": "Dish Name Here", "ingredients": ["ingredient 1", "ingredient 2", "ingredient 3"]}"""
+
+_RESTAURANT_CONTEXT_SNIPPET = """
+Additional context: This dish was ordered from {restaurant_name}. Use this information to:
+- Refine the dish name to match how this restaurant typically names it on their menu.
+- Adjust the ingredient list to reflect how this restaurant typically prepares the dish (e.g., signature sauces, proprietary spice blends, typical portion compositions)."""
+
+_HOME_COOKED_CONTEXT_SNIPPET = """
+Additional context: This is a home cooked meal. Identify all visible ingredients as precisely as possible without assuming standardised restaurant portions or branded preparations."""
+
+
+def _build_prompt(restaurant_context: str | None) -> str:
+    """Compose the full Gemini prompt, optionally injecting restaurant context."""
+    if not restaurant_context:
+        return _BASE_INGREDIENTS_PROMPT
+    if restaurant_context.strip().lower() == "home cooked":
+        return _BASE_INGREDIENTS_PROMPT + _HOME_COOKED_CONTEXT_SNIPPET
+    return _BASE_INGREDIENTS_PROMPT + _RESTAURANT_CONTEXT_SNIPPET.format(
+        restaurant_name=restaurant_context.strip()
+    )
 
 
 def _image_to_base64_and_mime(
@@ -122,6 +141,7 @@ def extract_ingredients_from_image(
     *,
     mime_type: str = "image/jpeg",
     api_key: Union[str, None] = None,
+    restaurant_context: Union[str, None] = None,
 ) -> dict:
     """
     Extract the dish name and ingredients from one or multiple food images using Gemini 2.5 Flash Lite.
@@ -130,6 +150,10 @@ def extract_ingredients_from_image(
         image_input: A single image (Path, str, or bytes) or a list of multiple images.
         mime_type: Default MIME type when image_input contains bytes.
         api_key: Vertex AI API Key. Falls back to VERTEXAI_API_KEY env var.
+        restaurant_context: Optional restaurant name (or ``"Home Cooked"``) surfaced by
+            the user during image upload.  When provided the Gemini prompt is augmented
+            with context about the establishment so the model can refine the dish name
+            and ingredient list accordingly.
 
     Returns:
         ``{"dish_name": "Spaghetti Carbonara", "ingredients": ["tomato", "basil", "mozzarella"]}``
@@ -142,7 +166,8 @@ def extract_ingredients_from_image(
         RuntimeError: If the Vertex AI API request fails.
     """
     key = _resolve_api_key(api_key)
-    text = _call_gemini(INGREDIENTS_PROMPT, image_input, mime_type, key)
+    prompt = _build_prompt(restaurant_context)
+    text = _call_gemini(prompt, image_input, mime_type, key)
     result = _parse_ingredients_json(text)
     result.setdefault("dish_name", "Analyzed Dish")
     result.setdefault("ingredients", [])
