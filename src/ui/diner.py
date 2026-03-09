@@ -2,9 +2,13 @@
 Diner tab UI for NutriGraph.
 
 This module handles the consumer-facing interface for:
-  - Uploading a dish photo and triggering the Gemini vision pipeline
-  - Viewing the AI-generated nutritional breakdown (Dish Detail View)
-  - Agent-assisted clarification conversation for high-confidence estimates
+  - Uploading a dish photo and triggering the Gemini vision pipeline (Step 1)
+  - Viewing the one-shot AI nutritional breakdown immediately after analysis
+  - Agent-assisted clarification loop (Step 2): the LangGraph clarification graph
+    automatically fires on the identified ingredients, asking the user targeted
+    questions for any ingredient whose retrieval confidence falls below the
+    DEFAULT_THRESHOLD defined in src/backend/clarification_graph.py
+  - Displaying the refined final estimate once all ingredients converge (Step 3)
   - Searching dishes by name (legacy text-based flow, kept for compatibility)
   - Personalised daily tracking (placeholder)
   - Submitting accuracy feedback
@@ -15,11 +19,9 @@ from datetime import date
 import pandas as pd
 
 from ..core.models import (
-    ConversationState,
-    ConversationTurn,
+    AnalyzedIngredient,
     Dish,
     DishAnalysisResponse,
-    MessageType,
     NutritionEstimate,
     generate_mock_ingredients,
     Ingredient,
@@ -30,6 +32,10 @@ from .components import (
     render_confidence_indicator,
     render_ingredients_table,
 )
+
+# ── Threshold mirrored from clarification_graph.py (imported lazily to avoid
+#    loading heavy ML dependencies at Streamlit startup time).
+_CONFIDENCE_THRESHOLD: float = 0.7
 
 # ── Issue types offered in the feedback form ─────────────────────────────────
 _FEEDBACK_ISSUE_TYPES = [
@@ -55,33 +61,29 @@ def render_diner(client: NutriGraphClient) -> None:
     st.header("🍽️ Diner View")
     st.caption("Upload a photo of your dish for an AI-powered nutritional breakdown")
 
-    # Ensure all session-state keys exist regardless of app boot order
-    st.session_state.setdefault("current_dish_analysis", None)
-    st.session_state.setdefault("last_estimate", None)
-    st.session_state.setdefault("current_conversation", None)
-    st.session_state.setdefault("conversation_messages", [])
+    _init_session_state()
 
-    # ── 1. Image upload & AI analysis ────────────────────────────────────────
+    # ── Step 1: Image upload & one-shot AI analysis ───────────────────────────
     _render_image_analysis_section(client)
 
     st.divider()
 
-    # ── 2. Dish Detail View (one-shot AI result) ──────────────────────────────
+    # ── Step 1 result: one-shot Dish Detail View ──────────────────────────────
     _render_analysis_detail_section()
 
     st.divider()
 
-    # ── 3. Agent-assisted conversation ───────────────────────────────────────
-    _render_agent_conversation_section(client)
+    # ── Step 2 + 3: Agent clarification loop & refined final result ───────────
+    _render_clarification_section()
 
     st.divider()
 
-    # ── 4. Feedback form ─────────────────────────────────────────────────────
+    # ── Feedback form ─────────────────────────────────────────────────────────
     _render_feedback_section()
 
     st.divider()
 
-    # ── 5. Legacy text-search (kept for backward compatibility) ──────────────
+    # ── Legacy text-search (kept for backward compatibility) ──────────────────
     with st.expander("🔍 Search by Dish Name (Legacy)", expanded=False):
         _render_dish_search_section(client)
         if st.session_state.last_estimate is not None:
@@ -90,30 +92,54 @@ def render_diner(client: NutriGraphClient) -> None:
 
     st.divider()
 
-    # ── 6. Personalised tracking placeholder ─────────────────────────────────
+    # ── Personalised tracking placeholder ────────────────────────────────────
     _render_tracking_section()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Shared detail-view helper (used by both one-shot and agent-refined paths)
+# Session-state initialisation
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _init_session_state() -> None:
+    """Initialise all session-state keys used by the Diner tab."""
+    # One-shot image analysis
+    st.session_state.setdefault("current_dish_analysis", None)
+    st.session_state.setdefault("last_estimate", None)
+
+    # Clarification agent state
+    st.session_state.setdefault("clar_active", False)
+    # Original ingredient names extracted from the image (used for display)
+    st.session_state.setdefault("clar_original_names", [])
+    # Ingredient query strings sent to ChromaDB; may be enriched with user answers
+    st.session_state.setdefault("clar_query_names", [])
+    # Latest raw ClarificationState dict returned by the LangGraph graph
+    st.session_state.setdefault("clar_state", None)
+    # Ordered list of {"question": str, "answer": str} turns shown in the chat
+    st.session_state.setdefault("clar_history", [])
+    # True once all ingredients are ≥ threshold
+    st.session_state.setdefault("clar_done", False)
+    # Serialised DishAnalysisResponse built from the converged graph state
+    st.session_state.setdefault("clar_refined_result", None)
+    # Non-empty string if the graph raised an exception
+    st.session_state.setdefault("clar_error", None)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Shared dish-detail renderer (one-shot & agent-refined paths both use this)
 # ─────────────────────────────────────────────────────────────────────────────
 
 def render_dish_detail(result: DishAnalysisResponse, *, label: str = "Dish Detail View") -> None:
     """
     Render a :class:`DishAnalysisResponse` as a structured nutritional breakdown.
 
-    This helper is intentionally decoupled from session state so it can be
-    called both from the one-shot image analysis flow and from the agent-refined
-    final-result flow.
+    Decoupled from session state so it can be reused for both the one-shot
+    image-analysis result and the agent-refined final result.
 
     Args:
         result: The nutritional analysis to display.
-        label:  Section heading shown above the breakdown.  Callers can pass a
-                custom label (e.g. "Agent-refined Nutritional Estimate (after
-                clarifications)") to distinguish sources.
+        label:  Section heading shown above the breakdown.
     """
     st.subheader(f"📊 {label}")
-
     st.markdown(f"### {result.dish_name}")
 
     st.markdown("#### Nutritional Totals")
@@ -148,12 +174,12 @@ def render_dish_detail(result: DishAnalysisResponse, *, label: str = "Dish Detai
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Section helpers
+# Step 1 — image upload & analysis
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _render_image_analysis_section(client: NutriGraphClient) -> None:
-    """Image upload widget + 'Analyze Dish' action button."""
-    st.subheader("📸 Upload Dish Photo")
+    """Image upload widget and 'Analyze Dish' action button (Step 1)."""
+    st.subheader("📸 Step 1 — Upload Dish Photo")
 
     uploaded_file = st.file_uploader(
         "Select an image of your dish",
@@ -163,12 +189,12 @@ def _render_image_analysis_section(client: NutriGraphClient) -> None:
     )
 
     if uploaded_file is not None:
-        col_img, col_spacer = st.columns([1, 2])
+        col_img, _ = st.columns([1, 2])
         with col_img:
             st.image(uploaded_file, caption=uploaded_file.name, use_container_width=True)
 
         if st.button("🔍 Analyze Dish", type="primary", use_container_width=True):
-            with st.spinner("Analyzing image and retrieving nutritional data..."):
+            with st.spinner("Analyzing image and retrieving nutritional data…"):
                 try:
                     uploaded_file.seek(0)
                     image_bytes = uploaded_file.read()
@@ -176,204 +202,359 @@ def _render_image_analysis_section(client: NutriGraphClient) -> None:
                         image_bytes, uploaded_file.name
                     )
                     st.session_state.current_dish_analysis = response.model_dump()
-                    st.success(f"Analysis complete for **{response.dish_name}**!")
 
                 except NutriGraphAPIError as exc:
                     st.error(f"⚠️ Analysis failed: {exc}")
+                    return
 
                 except Exception as exc:
                     st.error(f"⚠️ An unexpected error occurred: {exc}")
+                    return
+
+            st.success(f"Analysis complete for **{response.dish_name}**!")
+
+            # Automatically start the agent clarification loop on the
+            # identified ingredients (Step 2).
+            _init_clarification(response)
+
     else:
         st.info("Upload a dish photo above and click **Analyze Dish** to get started.")
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Step 1 result — one-shot dish detail view
+# ─────────────────────────────────────────────────────────────────────────────
+
 def _render_analysis_detail_section() -> None:
-    """
-    One-shot Dish Detail View — rendered when a successful DishAnalysisResponse is
-    stored in ``st.session_state.current_dish_analysis``.
-    """
+    """One-shot Dish Detail View rendered right after the image is analysed."""
     if not st.session_state.get("current_dish_analysis"):
         st.subheader("📊 Dish Detail View")
         st.info("Nutritional details will appear here after you analyze a dish photo.")
         return
 
     analysis = DishAnalysisResponse(**st.session_state.current_dish_analysis)
-    render_dish_detail(analysis, label="Dish Detail View")
+    render_dish_detail(analysis, label="Dish Detail View (one-shot estimate)")
 
     if st.button("🗑️ Clear Analysis", key="clear_analysis"):
         st.session_state.current_dish_analysis = None
+        _reset_clarification()
         st.rerun()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Agent conversation section
+# Clarification agent helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _render_agent_conversation_section(client: NutriGraphClient) -> None:
+def _init_clarification(analysis: DishAnalysisResponse) -> None:
     """
-    Agent-assisted Nutrition Estimate section.
+    Reset clarification session state and run the first graph pass.
 
-    Allows the user to start a multi-turn clarification dialogue with the
-    LangGraph backend agent.  The section handles:
+    Called automatically after a successful image analysis.  Populates
+    ``clar_original_names`` and ``clar_query_names`` from the identified
+    ingredients, then invokes the LangGraph clarification graph.
 
-    * Starting a new conversation (POST /api/v1/agent/start).
-    * Rendering all past turns as styled chat bubbles.
-    * Collecting and submitting user replies (POST /api/v1/agent/continue).
-    * Displaying the agent-refined final result once the agent converges.
+    Args:
+        analysis: The :class:`DishAnalysisResponse` returned by the vision pipeline.
     """
-    st.subheader("🤖 Agent-assisted Nutrition Estimate")
-    st.caption(
-        "Let the AI agent ask clarifying questions to produce a high-confidence "
-        "nutritional estimate for your dish."
-    )
+    names = [ing.name for ing in analysis.ingredients]
+    st.session_state.clar_active = True
+    st.session_state.clar_original_names = names
+    st.session_state.clar_query_names = list(names)   # mutable copy
+    st.session_state.clar_history = []
+    st.session_state.clar_done = False
+    st.session_state.clar_refined_result = None
+    st.session_state.clar_error = None
+    st.session_state.clar_state = None
+    _run_clarification_graph()
 
-    # ── Start-conversation form ───────────────────────────────────────────────
-    with st.form("agent_start_form", clear_on_submit=False):
-        agent_dish_name = st.text_input(
-            "Dish name *",
-            placeholder="e.g., Chicken Tikka Masala",
-            key="agent_dish_name_input",
-        )
-        agent_restaurant = st.text_input(
-            "Restaurant (optional)",
-            placeholder="e.g., Dishoom",
-            key="agent_restaurant_input",
-        )
-        start_clicked = st.form_submit_button(
-            "▶️ Start Agent Conversation", type="primary", use_container_width=True
+
+def _run_clarification_graph() -> None:
+    """
+    Invoke the LangGraph clarification graph on the current query ingredient
+    strings and persist the result in session state.
+
+    Uses the current ``clar_query_names`` list (which may have been enriched
+    by previous user answers).  If the graph finds no low-confidence
+    ingredients it marks the conversation as done and builds the refined
+    :class:`DishAnalysisResponse`.
+
+    Errors from ChromaDB (e.g. index not yet built) are caught and stored in
+    ``clar_error`` so the UI can surface a helpful message without crashing.
+    """
+    names = st.session_state.get("clar_query_names", [])
+    if not names:
+        st.session_state.clar_done = True
+        return
+
+    try:
+        # Lazy import keeps heavy ML dependencies out of the module-level import
+        # so that Streamlit startup stays fast even when the backend is offline.
+        from ..backend.clarification_graph import build_clarification_graph, DEFAULT_THRESHOLD
+
+        # Sync the module-level constant so the UI displays the correct value.
+        global _CONFIDENCE_THRESHOLD
+        _CONFIDENCE_THRESHOLD = DEFAULT_THRESHOLD
+
+        graph = build_clarification_graph()
+        result: dict = graph.invoke({"ingredients": names})
+        st.session_state.clar_state = result
+
+        if not result.get("low_conf_indices"):
+            # All ingredients are above the threshold — we are done.
+            st.session_state.clar_done = True
+            refined = _build_refined_result(
+                st.session_state.clar_original_names, result
+            )
+            st.session_state.clar_refined_result = refined.model_dump()
+
+    except Exception as exc:
+        st.session_state.clar_active = False
+        st.session_state.clar_error = (
+            f"{type(exc).__name__}: {exc}. "
+            "Make sure the ChromaDB index has been built "
+            "(run scripts/dataset/index_ingredients.py) and that all "
+            "backend dependencies are installed."
         )
 
-    if start_clicked:
-        if not agent_dish_name.strip():
-            st.warning("Please enter a dish name to start the conversation.")
+
+def _build_refined_result(
+    original_names: list[str],
+    clar_state: dict,
+) -> DishAnalysisResponse:
+    """
+    Construct a :class:`DishAnalysisResponse` from a converged
+    :class:`ClarificationState`.
+
+    For each ingredient the best ChromaDB match's macro values are used.
+    The combined retrieval score becomes the ``confidence_score`` on each
+    :class:`AnalyzedIngredient`.
+
+    Args:
+        original_names: Display names from the initial image analysis.
+        clar_state:     The raw dict returned by the LangGraph graph after
+                        convergence (i.e. ``low_conf_indices`` is empty).
+
+    Returns:
+        A :class:`DishAnalysisResponse` ready to be rendered.
+    """
+    matches: list[list[dict]] = clar_state.get("matches", [])
+    scores: list[float] = clar_state.get("scores", [])
+
+    analyzed: list[AnalyzedIngredient] = []
+    for i, name in enumerate(original_names):
+        if i < len(matches) and matches[i]:
+            best = matches[i][0]
+            calories = float(best.get("energy_kcal") or 0.0)
+            protein = float(best.get("protein_g") or 0.0)
+            carbs = float(best.get("carbohydrates_g") or 0.0)
+            fat = float(best.get("fat_g") or 0.0)
+            confidence = float(scores[i]) if i < len(scores) else 0.0
         else:
-            # Build initial payload; attach image analysis ID if one exists
-            initial_input: dict = {"dish_name": agent_dish_name.strip()}
-            if agent_restaurant.strip():
-                initial_input["restaurant_name"] = agent_restaurant.strip()
-            if st.session_state.get("current_dish_analysis"):
-                # Pass the dish name from the prior image analysis as a soft hint.
-                # When the backend assigns UUIDs to image analyses, swap this for the real ID.
-                initial_input["image_analysis_id"] = st.session_state.current_dish_analysis.get(
-                    "dish_name", ""
-                )
+            calories = protein = carbs = fat = confidence = 0.0
 
-            # Reset conversation state
-            st.session_state.current_conversation = None
-            st.session_state.conversation_messages = []
-
-            with st.spinner("Starting agent conversation…"):
-                try:
-                    state: ConversationState = client.start_dish_conversation(initial_input)
-                    st.session_state.current_conversation = state.model_dump()
-                    st.session_state.conversation_messages = [
-                        {"role": t.role, "type": t.type, "message": t.message}
-                        for t in state.history
-                    ]
-                except NutriGraphAPIError as exc:
-                    st.error(f"⚠️ Could not start conversation: {exc}")
-                except Exception as exc:
-                    st.error(f"⚠️ Unexpected error: {exc}")
-
-    # ── Chat display ─────────────────────────────────────────────────────────
-    if not st.session_state.conversation_messages:
-        return
-
-    st.markdown("---")
-    st.markdown("#### Conversation")
-
-    for turn in st.session_state.conversation_messages:
-        role = turn.get("role", "agent")
-        message = turn.get("message", "")
-        avatar = "🤖" if role == "agent" else "🧑"
-        with st.chat_message(role if role == "user" else "assistant"):
-            st.markdown(message)
-
-    # ── Reply input (only while the agent still has an open question) ─────────
-    conv_state = st.session_state.get("current_conversation")
-    if conv_state is None:
-        return
-
-    state_obj = ConversationState(**conv_state)
-
-    # Check whether the most recent agent turn is a question
-    last_agent_turn = next(
-        (t for t in reversed(state_obj.history) if t.role == "agent"), None
-    )
-    conversation_open = (
-        last_agent_turn is not None
-        and last_agent_turn.type == MessageType.question
-        and state_obj.final_result is None
-    )
-
-    if conversation_open:
-        with st.form("agent_reply_form", clear_on_submit=True):
-            user_reply = st.text_input(
-                "Your answer",
-                placeholder="Type your reply here…",
-                key="agent_user_reply",
+        analyzed.append(
+            AnalyzedIngredient(
+                name=name,
+                confidence_score=round(confidence, 3),
+                calories=calories,
+                protein=protein,
+                carbs=carbs,
+                fat=fat,
             )
-            send_clicked = st.form_submit_button(
-                "📨 Send", type="primary", use_container_width=True
-            )
-
-        if send_clicked:
-            if not user_reply.strip():
-                st.warning("Please type an answer before sending.")
-            else:
-                # Optimistically add the user turn to the visible message list
-                st.session_state.conversation_messages.append(
-                    {"role": "user", "type": MessageType.answer, "message": user_reply.strip()}
-                )
-
-                with st.spinner("Agent is thinking…"):
-                    try:
-                        updated: ConversationState = client.continue_dish_conversation(
-                            dish_id=state_obj.dish_id,
-                            user_message=user_reply.strip(),
-                        )
-                        st.session_state.current_conversation = updated.model_dump()
-                        # Rebuild the full message list from the authoritative backend state
-                        st.session_state.conversation_messages = [
-                            {"role": t.role, "type": t.type, "message": t.message}
-                            for t in updated.history
-                        ]
-                    except NutriGraphAPIError as exc:
-                        st.error(f"⚠️ Could not send reply: {exc}")
-                        # Roll back the optimistic user turn so the UI stays consistent
-                        st.session_state.conversation_messages.pop()
-                    except Exception as exc:
-                        st.error(f"⚠️ Unexpected error: {exc}")
-                        st.session_state.conversation_messages.pop()
-
-                st.rerun()
-
-    # ── Final result ──────────────────────────────────────────────────────────
-    if state_obj.final_result is not None:
-        st.success("✅ High-confidence estimate reached!")
-        render_dish_detail(
-            state_obj.final_result,
-            label="Agent-refined Nutritional Estimate (after clarifications)",
         )
 
-        if st.button("🔄 Start New Conversation", key="reset_conversation"):
-            st.session_state.current_conversation = None
-            st.session_state.conversation_messages = []
+    dish_name = (
+        (st.session_state.get("current_dish_analysis") or {})
+        .get("dish_name", "Analyzed Dish")
+    )
+
+    return DishAnalysisResponse(
+        dish_name=dish_name,
+        total_calories=round(sum(a.calories for a in analyzed), 1),
+        total_protein=round(sum(a.protein for a in analyzed), 1),
+        total_carbs=round(sum(a.carbs for a in analyzed), 1),
+        total_fat=round(sum(a.fat for a in analyzed), 1),
+        ingredients=analyzed,
+    )
+
+
+def _reset_clarification() -> None:
+    """Clear all clarification-related session state keys."""
+    for key in (
+        "clar_active",
+        "clar_original_names",
+        "clar_query_names",
+        "clar_state",
+        "clar_history",
+        "clar_done",
+        "clar_refined_result",
+        "clar_error",
+    ):
+        st.session_state.pop(key, None)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Step 2 + 3 — clarification chat loop and refined final result
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _render_clarification_section() -> None:
+    """
+    Render the agent-assisted clarification chat (Steps 2 & 3).
+
+    Layout:
+      - Confidence-threshold info bar
+      - Per-ingredient confidence scoreboard
+      - Chat history (alternating assistant / user bubbles)
+      - Current clarifying question + answer form  (Step 2, while open)
+      - OR: success banner + agent-refined final result (Step 3, when done)
+
+    The section is a no-op when no image analysis has been run yet.
+    """
+    if not st.session_state.get("clar_active"):
+        return
+
+    st.subheader("🤖 Step 2 — Agent Clarification")
+
+    # ── Error state ───────────────────────────────────────────────────────────
+    if st.session_state.get("clar_error"):
+        st.error(f"⚠️ Clarification agent unavailable: {st.session_state.clar_error}")
+        st.caption(
+            "The one-shot estimate above is still valid. "
+            "Agent clarification requires the ChromaDB ingredient index to be built."
+        )
+        return
+
+    threshold = _CONFIDENCE_THRESHOLD
+    clar_state: dict | None = st.session_state.get("clar_state")
+    if clar_state:
+        threshold = float(clar_state.get("threshold", threshold))
+
+    st.caption(
+        f"Confidence threshold: **{threshold:.0%}** — the agent asks clarifying questions "
+        f"for ingredients whose retrieval score is below this value."
+    )
+
+    # ── Ingredient confidence scoreboard ──────────────────────────────────────
+    original_names: list[str] = st.session_state.get("clar_original_names", [])
+    scores: list[float] = clar_state.get("scores", []) if clar_state else []
+
+    if original_names and scores:
+        with st.expander("📊 Ingredient confidence scores", expanded=True):
+            cols = st.columns(min(len(original_names), 4))
+            for i, name in enumerate(original_names):
+                score = scores[i] if i < len(scores) else 0.0
+                icon = "✅" if score >= threshold else "🔴"
+                with cols[i % len(cols)]:
+                    st.metric(
+                        label=f"{icon} {name}",
+                        value=f"{score:.0%}",
+                        help=(
+                            "Above threshold — high confidence"
+                            if score >= threshold
+                            else "Below threshold — clarification needed"
+                        ),
+                    )
+
+    # ── Conversation history ──────────────────────────────────────────────────
+    history: list[dict] = st.session_state.get("clar_history", [])
+    if history:
+        st.markdown("#### Conversation")
+        for turn in history:
+            with st.chat_message("assistant"):
+                st.markdown(turn["question"])
+            with st.chat_message("user"):
+                st.markdown(turn["answer"])
+
+    # ── Step 3: converged — show refined final result ─────────────────────────
+    if st.session_state.get("clar_done"):
+        st.success(
+            f"✅ All ingredients now meet the **{threshold:.0%}** confidence threshold!"
+        )
+        refined_data = st.session_state.get("clar_refined_result")
+        if refined_data:
+            refined = DishAnalysisResponse(**refined_data)
+            render_dish_detail(
+                refined,
+                label="Agent-refined Nutritional Estimate (after clarifications)",
+            )
+
+        if st.button("🔄 Clear & Start Over", key="clar_reset"):
+            _reset_clarification()
+            st.rerun()
+        return
+
+    # ── Step 2: ongoing — show the next clarifying question ───────────────────
+    if not clar_state:
+        st.info("Running agent analysis…")
+        return
+
+    questions: list[str] = clar_state.get("questions", [])
+    low_conf_ingredients: list[str] = clar_state.get("low_conf_ingredients", [])
+    low_conf_indices: list[int] = clar_state.get("low_conf_indices", [])
+
+    if not questions:
+        # Graph ran but produced no questions yet no convergence — edge case.
+        st.session_state.clar_done = True
+        st.rerun()
+        return
+
+    # Always surface the FIRST pending question; the rest will follow after
+    # re-runs as each ingredient is clarified.
+    current_question = questions[0]
+    current_ingredient = low_conf_ingredients[0] if low_conf_ingredients else "ingredient"
+    target_idx = low_conf_indices[0] if low_conf_indices else 0
+
+    with st.chat_message("assistant"):
+        st.markdown(current_question)
+
+    with st.form("clar_reply_form", clear_on_submit=True):
+        user_answer = st.text_input(
+            "Your answer",
+            placeholder=f"Describe the {current_ingredient} in more detail…",
+            key="clar_user_answer_input",
+        )
+        submitted = st.form_submit_button("Send ➤", type="primary", use_container_width=True)
+
+    if submitted:
+        if not user_answer.strip():
+            st.warning("Please type an answer before sending.")
+        else:
+            # Record the turn in the visible history
+            st.session_state.clar_history.append(
+                {"question": current_question, "answer": user_answer.strip()}
+            )
+
+            # Enrich the query string so the next graph pass gets more context
+            current_query = st.session_state.clar_query_names[target_idx]
+            st.session_state.clar_query_names[target_idx] = (
+                f"{current_query} {user_answer.strip()}"
+            )
+
+            # Re-run the full clarification graph with the updated ingredient list
+            with st.spinner("Agent is re-analysing…"):
+                _run_clarification_graph()
+
+            # Force a re-render so the updated history and new question (or
+            # the final result) are shown immediately.
             st.rerun()
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Feedback section
+# ─────────────────────────────────────────────────────────────────────────────
 
 def _render_feedback_section() -> None:
     """Feedback form for flagging incorrect AI-generated data."""
     with st.expander("🚩 Flag Incorrect Data or Suggest an Edit"):
         st.caption("Help NutriGraph's AI improve by reporting inaccuracies")
 
-        issue_type = st.selectbox(
+        st.selectbox(
             "Issue type",
             options=_FEEDBACK_ISSUE_TYPES,
             key="feedback_issue_type",
         )
 
-        additional_details = st.text_area(
+        st.text_area(
             "Additional details",
             placeholder=(
                 "e.g., The grilled salmon portion should be 180 g, not 100 g. "
@@ -389,7 +570,7 @@ def _render_feedback_section() -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Legacy helpers (text-search workflow)
+# Legacy helpers — text-search workflow
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _render_dish_search_section(client: NutriGraphClient) -> None:
@@ -397,14 +578,12 @@ def _render_dish_search_section(client: NutriGraphClient) -> None:
     st.subheader("🔍 Dish Search / Log")
 
     col1, col2 = st.columns([2, 1])
-
     with col1:
         dish_name = st.text_input(
             "Dish name",
             placeholder="e.g., Chicken Alfredo Pasta",
             key="diner_dish_name",
         )
-
     with col2:
         restaurant_name = st.text_input(
             "Restaurant (optional)",
@@ -417,7 +596,7 @@ def _render_dish_search_section(client: NutriGraphClient) -> None:
             st.warning("Please enter a dish name.")
             return
 
-        with st.spinner("Estimating nutrition..."):
+        with st.spinner("Estimating nutrition…"):
             dish = Dish(
                 name=dish_name,
                 restaurant=restaurant_name if restaurant_name else None,
@@ -468,10 +647,8 @@ def _render_tracking_section() -> None:
     st.subheader("📈 Personalised Tracking")
 
     col1, col2 = st.columns([1, 2])
-
     with col1:
         st.date_input("Select date", value=date.today(), key="tracking_date")
-
     with col2:
         st.markdown("#### Daily Totals (Mock)")
         daily_cols = st.columns(4)

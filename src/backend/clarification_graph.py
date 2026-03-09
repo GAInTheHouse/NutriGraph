@@ -23,6 +23,11 @@ from langgraph.graph import END, StateGraph
 
 from .retrieval_server import _get_collection, _get_embedding_model
 
+# Confidence threshold used by the clarification graph.
+# Ingredients whose best combined score (vector + lexical) falls below this
+# value are considered low-confidence and will trigger a clarifying question.
+DEFAULT_THRESHOLD: float = 0.7
+
 
 class RetrievalMatch(TypedDict, total=False):
     """Lightweight view of a retrieval match used in the agent state."""
