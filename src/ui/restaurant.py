@@ -8,6 +8,7 @@ import streamlit as st
 
 from ..core.models import Dish, Ingredient, NutritionEstimate
 from ..core.api_client import NutriGraphClient, NutriGraphAPIError
+from ..core.api_client import NutriGraphClient, NutriGraphAPIError
 from ..core.config import settings
 from .components import (
     render_macro_card,
