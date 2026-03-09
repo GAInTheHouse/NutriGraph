@@ -319,8 +319,12 @@ def _handle_generate_profile(
             ingredients=st.session_state.restaurant_ingredients
         )
         
-        # Generate profile (currently mocked)
-        estimate = client.builder_generate_profile(dish)
+        # Generate nutrition profile via NutriGraph API
+        try:
+            estimate = client.builder_generate_profile(dish)
+        except NutriGraphAPIError as exc:
+            st.error(f"Failed to generate nutrition profile: {exc}")
+            return
         
         # Persist to session state so the Publish button can reference it
         st.session_state.last_generated_profile = {
