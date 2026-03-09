@@ -294,12 +294,12 @@ class NutriGraphClient:
             query: Restaurant name or free-text search phrase.
 
         Returns:
-            List of place dicts.  Empty list when no matches are found or when
-            the backend Places integration is not configured.
+            List of place dicts.  Empty list when no matches are found.
 
         Raises:
-            NutriGraphAPIError: If the backend is unreachable or returns an
-                unexpected HTTP error.
+            NutriGraphAPIError: If the backend is unreachable, returns an
+                unexpected HTTP error, or returns HTTP 503 because the Google
+                Places API key has not been configured on the server.
         """
         url = f"{self.base_url}/api/v1/places/search"
         try:

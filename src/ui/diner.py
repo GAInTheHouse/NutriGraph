@@ -278,6 +278,13 @@ def _render_restaurant_tagging(client: NutriGraphClient) -> None:
         st.session_state.selected_restaurant = "Home Cooked"
         return
 
+    # Checkbox was just unchecked (or was never checked): make sure any
+    # previously stored "Home Cooked" value doesn't leak into a new analysis.
+    if st.session_state.get("selected_restaurant") == "Home Cooked":
+        st.session_state.selected_restaurant = None
+        st.session_state.restaurant_results = []
+        st.session_state.pop("diner_restaurant_selectbox", None)
+
     # Two-step Places search when not home cooked
     rest_col1, rest_col2 = st.columns([3, 1])
     with rest_col1:
@@ -303,6 +310,7 @@ def _render_restaurant_tagging(client: NutriGraphClient) -> None:
                     results = client.search_restaurants(rest_query)
                     st.session_state.restaurant_results = results
                     st.session_state.selected_restaurant = None
+                    st.session_state.pop("diner_restaurant_selectbox", None)
                     if not results:
                         st.info("No restaurants found. Try a different search term.")
                 except NutriGraphAPIError as exc:

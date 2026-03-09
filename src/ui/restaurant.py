@@ -77,8 +77,8 @@ def _render_restaurant_profile_section(client: NutriGraphClient) -> None:
         return
 
     st.caption(
-        "Search for your restaurant by name to claim your profile. "
-        "All dishes you create will be linked to this location."
+        "Search for your restaurant by name to set the active profile. "
+        "The dish builder and catalog will be enabled once a location is confirmed."
     )
 
     search_col, btn_col = st.columns([3, 1])
@@ -104,6 +104,7 @@ def _render_restaurant_profile_section(client: NutriGraphClient) -> None:
                 try:
                     results = client.search_restaurants(profile_query)
                     st.session_state.restaurant_profile_results = results
+                    st.session_state.pop("restaurant_profile_selectbox", None)
                     if not results:
                         st.info(
                             "No restaurants found matching that name. "

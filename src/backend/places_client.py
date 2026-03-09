@@ -97,10 +97,12 @@ class GooglePlacesClient:
             return []
 
         if not response.ok:
-            payload = response.json() if response.content else {}
-            error_message = (
-                payload.get("error", {}).get("message", response.text)
-            )
+            try:
+                payload = response.json() if response.content else {}
+                error_message = payload.get("error", {}).get("message") or response.text
+            except ValueError:
+                payload = {}
+                error_message = response.text
             logger.error(
                 "Google Places API returned HTTP %s for query=%r: %s",
                 response.status_code,
