@@ -270,6 +270,62 @@ class NutriGraphClient:
             logger.exception("Unexpected error calling agent/continue endpoint.")
             raise NutriGraphAPIError(f"An unexpected error occurred: {exc}") from exc
 
+    def search_restaurants(self, query: str) -> list[dict]:
+        """
+        Search for real-world restaurant establishments via the backend Places proxy.
+
+        GETs ``/api/v1/places/search?query={query}`` and returns the ``results``
+        list.  Each element is a dict with keys ``place_id``, ``name``, and
+        ``address`` corresponding to :class:`~src.core.models.PlaceSearchResult`.
+
+        Args:
+            query: Restaurant name or free-text search phrase.
+
+        Returns:
+            List of place dicts.  Empty list when no matches are found or when
+            the backend Places integration is not configured.
+
+        Raises:
+            NutriGraphAPIError: If the backend is unreachable or returns an
+                unexpected HTTP error.
+        """
+        url = f"{self.base_url}/api/v1/places/search"
+        try:
+            response = requests.get(url, params={"query": query}, timeout=15)
+            response.raise_for_status()
+            return response.json().get("results", [])
+
+        except requests.exceptions.ConnectionError as exc:
+            logger.error("Backend unreachable at %s: %s", url, exc)
+            raise NutriGraphAPIError(
+                "Could not connect to the NutriGraph backend. "
+                "Please verify the server is running and the URL is correct."
+            ) from exc
+
+        except requests.exceptions.Timeout as exc:
+            logger.error("Request to %s timed out.", url)
+            raise NutriGraphAPIError(
+                "The Places search request timed out. Please try again."
+            ) from exc
+
+        except requests.exceptions.HTTPError as exc:
+            status_code = exc.response.status_code if exc.response is not None else None
+            if status_code == 503:
+                raise NutriGraphAPIError(
+                    "Restaurant search is not available: the Google Places API key "
+                    "has not been configured on the server.",
+                    status_code=status_code,
+                ) from exc
+            logger.error("Backend returned HTTP %s for %s: %s", status_code, url, exc)
+            raise NutriGraphAPIError(
+                f"The backend returned an error (HTTP {status_code}). Please try again later.",
+                status_code=status_code,
+            ) from exc
+
+        except Exception as exc:
+            logger.exception("Unexpected error calling places/search endpoint.")
+            raise NutriGraphAPIError(f"An unexpected error occurred: {exc}") from exc
+
     def health_check(self) -> bool:
         """
         Check if the backend API is available.

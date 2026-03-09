@@ -106,6 +106,11 @@ def _init_session_state() -> None:
     st.session_state.setdefault("current_dish_analysis", None)
     st.session_state.setdefault("last_estimate", None)
 
+    # Restaurant tagging (dish search / log section)
+    st.session_state.setdefault("restaurant_home_cooked", True)
+    st.session_state.setdefault("restaurant_results", [])
+    st.session_state.setdefault("selected_restaurant", None)
+
     # Clarification agent state
     st.session_state.setdefault("clar_active", False)
     # Original ingredient names extracted from the image (used for display)
@@ -710,20 +715,70 @@ def _render_dish_search_section(client: NutriGraphClient) -> None:
     """Text-based dish search using the mock/RAG estimation pipeline."""
     st.subheader("🔍 Dish Search / Log")
 
-    col1, col2 = st.columns([2, 1])
-    with col1:
-        dish_name = st.text_input(
-            "Dish name",
-            placeholder="e.g., Chicken Alfredo Pasta",
-            key="diner_dish_name",
-        )
-    with col2:
-        restaurant_name = st.text_input(
-            "Restaurant (optional)",
-            placeholder="e.g., Olive Garden",
-            key="diner_restaurant",
-        )
+    dish_name = st.text_input(
+        "Dish name",
+        placeholder="e.g., Chicken Alfredo Pasta",
+        key="diner_dish_name",
+    )
 
+    # ── Restaurant tagging ────────────────────────────────────────────────────
+    home_cooked = st.checkbox(
+        "Home Cooked Meal",
+        value=st.session_state.restaurant_home_cooked,
+        key="restaurant_home_cooked",
+    )
+
+    resolved_restaurant: str | None = None
+
+    if home_cooked:
+        st.session_state.selected_restaurant = "Home Cooked"
+        resolved_restaurant = "Home Cooked"
+    else:
+        # Two-step Google Places search
+        rest_col1, rest_col2 = st.columns([3, 1])
+        with rest_col1:
+            rest_query = st.text_input(
+                "Search Restaurant Name",
+                placeholder="e.g., Shake Shack Manhattan",
+                key="diner_restaurant_query",
+            )
+        with rest_col2:
+            st.write("")  # vertical alignment nudge
+            find_clicked = st.button(
+                "Find Restaurant",
+                key="diner_find_restaurant",
+                use_container_width=True,
+            )
+
+        if find_clicked:
+            if not rest_query.strip():
+                st.warning("Enter a restaurant name to search.")
+            else:
+                with st.spinner("Searching for restaurants…"):
+                    try:
+                        results = client.search_restaurants(rest_query)
+                        st.session_state.restaurant_results = results
+                        st.session_state.selected_restaurant = None
+                        if not results:
+                            st.info("No restaurants found. Try a different search term.")
+                    except NutriGraphAPIError as exc:
+                        st.error(f"Restaurant search failed: {exc}")
+                        st.session_state.restaurant_results = []
+
+        if st.session_state.restaurant_results:
+            options = st.session_state.restaurant_results
+            labels = [f"{p['name']} — {p['address']}" for p in options]
+            selected_idx = st.selectbox(
+                "Select your restaurant",
+                options=range(len(labels)),
+                format_func=lambda i: labels[i],
+                key="diner_restaurant_selectbox",
+            )
+            chosen = options[selected_idx]
+            st.session_state.selected_restaurant = chosen
+            resolved_restaurant = chosen["name"]
+
+    # ── Estimate nutrition ────────────────────────────────────────────────────
     if st.button("🔮 Estimate Nutrition", type="primary", use_container_width=True):
         if not dish_name:
             st.warning("Please enter a dish name.")
@@ -732,7 +787,7 @@ def _render_dish_search_section(client: NutriGraphClient) -> None:
         with st.spinner("Estimating nutrition…"):
             dish = Dish(
                 name=dish_name,
-                restaurant=restaurant_name if restaurant_name else None,
+                restaurant=resolved_restaurant,
             )
             estimate = client.estimate_nutrition(dish)
             mock_ingredients = generate_mock_ingredients(dish_name)
