@@ -26,8 +26,8 @@ class DishRecord(Base):
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
 
-    # The canonical dish name returned by Gemini (lower-cased for lookups,
-    # but stored as-is for display).
+    # The canonical dish name returned by Gemini, stored as-is for display.
+    # Case-insensitive lookups are performed at query time via func.lower().
     dish_name = Column(String, index=True, nullable=False)
 
     # Google Places place_id for the restaurant; NULL for home-cooked meals.

@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 # Place the DB file at the project root so it persists across restarts
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
+(_PROJECT_ROOT / "data").mkdir(parents=True, exist_ok=True)
 SQLALCHEMY_DATABASE_URL = f"sqlite:///{_PROJECT_ROOT}/data/nutrigraph.db"
 
 engine = create_engine(

@@ -11,6 +11,7 @@ to batch multiple operations into a single atomic transaction.
 import json
 from typing import Optional
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from .db_models import DishRecord
@@ -44,7 +45,7 @@ def get_dish_record(
         when nothing is found.
     """
     query = db.query(DishRecord).filter(
-        DishRecord.dish_name.ilike(dish_name),
+        func.lower(DishRecord.dish_name) == dish_name.lower(),
         DishRecord.restaurant_place_id == place_id,
     )
 

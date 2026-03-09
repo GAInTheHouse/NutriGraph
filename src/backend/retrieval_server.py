@@ -308,9 +308,17 @@ def builder_generate_profile(payload: Dish) -> NutritionEstimate:
         name = ing.name.strip()
         if not name:
             continue
+        if ing.unit not in _UNIT_TO_GRAMS:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Unsupported unit '{ing.unit}' for ingredient '{name}'. "
+                    f"Accepted units: {sorted(_UNIT_TO_GRAMS)}."
+                ),
+            )
         n = nutrition_map.get(name, {})
         # Scale the per-100g ChromaDB values by the actual quantity in grams.
-        factor = ing.quantity * _UNIT_TO_GRAMS.get(ing.unit, 1.0) / 100.0
+        factor = ing.quantity * _UNIT_TO_GRAMS[ing.unit] / 100.0
         total_cal   += n.get("energy_kcal",     0.0) * factor
         total_pro   += n.get("protein_g",        0.0) * factor
         total_carb  += n.get("carbohydrates_g",  0.0) * factor
@@ -394,7 +402,7 @@ def _lookup_nutrition(
     tags=["analysis"],
     summary="Analyze a dish photo and return a full nutritional breakdown",
 )
-async def analyze_dish(
+def analyze_dish(
     file: UploadFile = File(..., description="JPEG or PNG photo of the dish to analyze"),
     restaurant_context: Optional[str] = Form(
         None,
@@ -436,7 +444,7 @@ async def analyze_dish(
     Requires ``VERTEXAI_API_KEY`` to be set in the environment (or ``.env`` file).
     """
     # ── 1. Read image bytes ───────────────────────────────────────────────────
-    image_bytes = await file.read()
+    image_bytes = file.file.read()
     if not image_bytes:
         raise HTTPException(status_code=422, detail="Uploaded file is empty.")
 
@@ -519,7 +527,7 @@ async def analyze_dish(
             status_code=500, detail=f"Unexpected error during image analysis: {exc}"
         ) from exc
 
-    llm_dish_name: str = dish_info.get("dish_name", "Analyzed Dish")
+    llm_dish_name: str = dish_info.get("dish_name", "Analyzed Dish").strip() or "Analyzed Dish"
     ingredient_names: List[str] = [
         i.strip() for i in dish_info.get("ingredients", []) if i and i.strip()
     ]
@@ -603,7 +611,7 @@ def publish_restaurant_dish(
         ingredients = []
 
     analysis = DishAnalysisResponse(
-        dish_name=payload.dish_name,
+        dish_name=payload.dish_name.strip(),
         total_calories=payload.calories,
         total_protein=payload.protein,
         total_carbs=payload.carbs,
@@ -612,7 +620,7 @@ def publish_restaurant_dish(
         is_cached=False,
         data_source="restaurant_verified",
     )
-    save_dish_record(db, analysis, payload.place_id, source="restaurant")
+    save_dish_record(db, analysis, payload.place_id.strip(), source="restaurant")
     db.commit()
     return {"status": "published"}
 
