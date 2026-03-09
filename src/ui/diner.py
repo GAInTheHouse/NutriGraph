@@ -114,7 +114,7 @@ def _init_session_state() -> None:
     st.session_state.setdefault("clar_query_names", [])
     # Latest raw ClarificationState dict returned by the LangGraph graph
     st.session_state.setdefault("clar_state", None)
-    # Ordered list of {"question": str, "answer": str} turns shown in the chat
+    # Ordered list of {"question", "answer", "scores_before", "scores_after"} turns
     st.session_state.setdefault("clar_history", [])
     # True once all ingredients are ≥ threshold
     st.session_state.setdefault("clar_done", False)
@@ -122,6 +122,10 @@ def _init_session_state() -> None:
     st.session_state.setdefault("clar_refined_result", None)
     # Non-empty string if the graph raised an exception
     st.session_state.setdefault("clar_error", None)
+    # Per-ingredient scores from the very first graph run (baseline for delta display)
+    st.session_state.setdefault("clar_initial_scores", [])
+    # Per-ingredient scores from the previous graph run (for round-over-round delta)
+    st.session_state.setdefault("clar_prev_scores", [])
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -152,6 +156,19 @@ def render_dish_detail(result: DishAnalysisResponse, *, label: str = "Dish Detai
         st.metric("🌾 Carbs", f"{result.total_carbs:.1f} g")
     with col4:
         st.metric("🥑 Fat", f"{result.total_fat:.1f} g")
+
+    # Overall confidence summary derived from per-ingredient scores
+    if result.ingredients:
+        avg_conf = sum(ing.confidence_score for ing in result.ingredients) / len(result.ingredients)
+        st.markdown("#### Overall Confidence")
+        conf_col, bar_col = st.columns([1, 3])
+        with conf_col:
+            st.metric("🎯 Average", f"{avg_conf:.1%}")
+        with bar_col:
+            st.progress(
+                min(avg_conf, 1.0),
+                text=f"{avg_conf:.1%} mean confidence across {len(result.ingredients)} ingredient(s)",
+            )
 
     st.markdown("#### Identified Ingredients")
     if result.ingredients:
@@ -295,9 +312,17 @@ def _run_clarification_graph() -> None:
         global _CONFIDENCE_THRESHOLD
         _CONFIDENCE_THRESHOLD = DEFAULT_THRESHOLD
 
+        # Snapshot current scores as "previous" before overwriting clar_state.
+        existing = st.session_state.get("clar_state") or {}
+        st.session_state.clar_prev_scores = list(existing.get("scores", []))
+
         graph = build_clarification_graph()
         result: dict = graph.invoke({"ingredients": names})
         st.session_state.clar_state = result
+
+        # Persist the very first set of scores as the baseline for total-improvement display.
+        if not st.session_state.get("clar_initial_scores"):
+            st.session_state.clar_initial_scores = list(result.get("scores", []))
 
         if not result.get("low_conf_indices"):
             # All ingredients are above the threshold — we are done.
@@ -389,6 +414,8 @@ def _reset_clarification() -> None:
         "clar_done",
         "clar_refined_result",
         "clar_error",
+        "clar_initial_scores",
+        "clar_prev_scores",
     ):
         st.session_state.pop(key, None)
 
@@ -434,20 +461,47 @@ def _render_clarification_section() -> None:
         f"for ingredients whose retrieval score is below this value."
     )
 
-    # ── Ingredient confidence scoreboard ──────────────────────────────────────
     original_names: list[str] = st.session_state.get("clar_original_names", [])
     scores: list[float] = clar_state.get("scores", []) if clar_state else []
+    initial_scores: list[float] = st.session_state.get("clar_initial_scores", [])
+    prev_scores: list[float] = st.session_state.get("clar_prev_scores", [])
 
+    # ── Overall confidence banner ──────────────────────────────────────────────
+    if scores:
+        avg_now = sum(scores) / len(scores)
+        avg_initial = sum(initial_scores) / len(initial_scores) if initial_scores else avg_now
+        total_delta = avg_now - avg_initial
+
+        conf_col, bar_col = st.columns([1, 3])
+        with conf_col:
+            st.metric(
+                "🎯 Overall confidence",
+                f"{avg_now:.1%}",
+                delta=f"{total_delta:+.1%} from initial" if initial_scores else None,
+                delta_color="normal",
+            )
+        with bar_col:
+            st.progress(
+                min(avg_now, 1.0),
+                text=f"Target: **{threshold:.0%}** — currently at **{avg_now:.1%}**",
+            )
+
+    # ── Per-ingredient confidence scoreboard ──────────────────────────────────
     if original_names and scores:
-        with st.expander("📊 Ingredient confidence scores", expanded=True):
+        with st.expander("📊 Per-ingredient confidence scores", expanded=True):
             cols = st.columns(min(len(original_names), 4))
             for i, name in enumerate(original_names):
                 score = scores[i] if i < len(scores) else 0.0
+                prev = prev_scores[i] if i < len(prev_scores) else None
                 icon = "✅" if score >= threshold else "🔴"
+                # delta shows round-over-round improvement for this ingredient
+                delta_str = f"{score - prev:+.0%}" if prev is not None else None
                 with cols[i % len(cols)]:
                     st.metric(
                         label=f"{icon} {name}",
                         value=f"{score:.0%}",
+                        delta=delta_str,
+                        delta_color="normal",
                         help=(
                             "Above threshold — high confidence"
                             if score >= threshold
@@ -455,7 +509,7 @@ def _render_clarification_section() -> None:
                         ),
                     )
 
-    # ── Conversation history ──────────────────────────────────────────────────
+    # ── Conversation history with per-turn confidence change ──────────────────
     history: list[dict] = st.session_state.get("clar_history", [])
     if history:
         st.markdown("#### Conversation")
@@ -464,12 +518,47 @@ def _render_clarification_section() -> None:
                 st.markdown(turn["question"])
             with st.chat_message("user"):
                 st.markdown(turn["answer"])
+            # Show the confidence shift produced by this answer
+            sb: list[float] = turn.get("scores_before", [])
+            sa: list[float] = turn.get("scores_after", [])
+            if sb and sa:
+                avg_b = sum(sb) / len(sb)
+                avg_a = sum(sa) / len(sa)
+                diff = avg_a - avg_b
+                arrow = "📈" if diff > 0.001 else ("📉" if diff < -0.001 else "➡️")
+                color = "green" if diff > 0.001 else ("red" if diff < -0.001 else "gray")
+                st.markdown(
+                    f"<p style='color:{color};font-size:0.82em;margin:2px 0 8px 0'>"
+                    f"{arrow}&nbsp;Overall confidence after this answer: "
+                    f"<b>{avg_b:.1%} → {avg_a:.1%}</b> ({diff:+.1%})</p>",
+                    unsafe_allow_html=True,
+                )
 
-    # ── Step 3: converged — show refined final result ─────────────────────────
+    # ── Step 3: converged — summary metrics + refined result ─────────────────
     if st.session_state.get("clar_done"):
+        final_scores: list[float] = clar_state.get("scores", []) if clar_state else []
+        final_avg = sum(final_scores) / len(final_scores) if final_scores else 0.0
+        init_avg = sum(initial_scores) / len(initial_scores) if initial_scores else final_avg
+        rounds = len(history)
+
         st.success(
             f"✅ All ingredients now meet the **{threshold:.0%}** confidence threshold!"
         )
+
+        # Journey summary
+        j1, j2, j3 = st.columns(3)
+        with j1:
+            st.metric("Initial confidence", f"{init_avg:.1%}")
+        with j2:
+            st.metric(
+                "Final confidence",
+                f"{final_avg:.1%}",
+                delta=f"{final_avg - init_avg:+.1%}",
+                delta_color="normal",
+            )
+        with j3:
+            st.metric("Clarification rounds", str(rounds))
+
         refined_data = st.session_state.get("clar_refined_result")
         if refined_data:
             refined = DishAnalysisResponse(**refined_data)
@@ -493,13 +582,12 @@ def _render_clarification_section() -> None:
     low_conf_indices: list[int] = clar_state.get("low_conf_indices", [])
 
     if not questions:
-        # Graph ran but produced no questions yet no convergence — edge case.
+        # Graph ran but produced no questions and no convergence — edge case.
         st.session_state.clar_done = True
         st.rerun()
         return
 
-    # Always surface the FIRST pending question; the rest will follow after
-    # re-runs as each ingredient is clarified.
+    # Always surface the FIRST pending question; the rest follow in subsequent reruns.
     current_question = questions[0]
     current_ingredient = low_conf_ingredients[0] if low_conf_ingredients else "ingredient"
     target_idx = low_conf_indices[0] if low_conf_indices else 0
@@ -519,23 +607,32 @@ def _render_clarification_section() -> None:
         if not user_answer.strip():
             st.warning("Please type an answer before sending.")
         else:
-            # Record the turn in the visible history
-            st.session_state.clar_history.append(
-                {"question": current_question, "answer": user_answer.strip()}
-            )
+            # Capture scores BEFORE re-running so we can show the delta in history.
+            scores_before = list(clar_state.get("scores", []))
 
-            # Enrich the query string so the next graph pass gets more context
+            # Enrich the query string so the next graph pass gets more context.
             current_query = st.session_state.clar_query_names[target_idx]
             st.session_state.clar_query_names[target_idx] = (
                 f"{current_query} {user_answer.strip()}"
             )
 
-            # Re-run the full clarification graph with the updated ingredient list
+            # Re-run the full clarification graph with the updated ingredient list.
             with st.spinner("Agent is re-analysing…"):
                 _run_clarification_graph()
 
-            # Force a re-render so the updated history and new question (or
-            # the final result) are shown immediately.
+            # Capture scores AFTER re-running and store the full turn record.
+            new_state = st.session_state.get("clar_state") or {}
+            scores_after = list(new_state.get("scores", []))
+            st.session_state.clar_history.append(
+                {
+                    "question": current_question,
+                    "answer": user_answer.strip(),
+                    "scores_before": scores_before,
+                    "scores_after": scores_after,
+                }
+            )
+
+            # Force a re-render so updated history and new question appear immediately.
             st.rerun()
 
 
