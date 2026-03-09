@@ -105,16 +105,24 @@ class NutriGraphClient:
         # return NutritionEstimate(**response.json())
         raise NotImplementedError("Backend API not yet implemented")
     
-    def analyze_dish_image(self, image_bytes: bytes, filename: str) -> DishAnalysisResponse:
+    def analyze_dish_image(
+        self,
+        image_bytes: bytes,
+        filename: str,
+        restaurant_context: Optional[str] = None,
+    ) -> DishAnalysisResponse:
         """
         Send a dish photo to the Gemini vision pipeline and retrieve its nutritional breakdown.
 
-        Makes a multipart POST to ``/api/v1/analyze-dish``.  The backend is expected to
-        return a JSON body that maps directly onto :class:`DishAnalysisResponse`.
+        Makes a multipart POST to ``/api/v1/analyze-dish``.  When ``restaurant_context``
+        is provided it is forwarded as a form field so the backend can enrich the Gemini
+        prompt with establishment-specific knowledge.
 
         Args:
             image_bytes: Raw bytes of the uploaded image.
             filename: Original filename (used to infer MIME type on the server side).
+            restaurant_context: Optional restaurant name (or ``"Home Cooked"``) selected
+                by the user during the upload step.
 
         Returns:
             DishAnalysisResponse with totals and per-ingredient macros.
@@ -124,10 +132,14 @@ class NutriGraphClient:
                 non-2xx status code.
         """
         url = f"{self.base_url}/api/v1/analyze-dish"
+        data = {}
+        if restaurant_context:
+            data["restaurant_context"] = restaurant_context
         try:
             response = requests.post(
                 url,
                 files={"file": (filename, image_bytes, "image/jpeg")},
+                data=data or None,
                 timeout=60,
             )
             response.raise_for_status()

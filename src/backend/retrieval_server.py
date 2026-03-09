@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 import chromadb
-from fastapi import FastAPI, File, HTTPException, Query, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field, field_validator
 from sentence_transformers import SentenceTransformer
 
@@ -296,11 +296,21 @@ def _lookup_nutrition(
 )
 async def analyze_dish(
     file: UploadFile = File(..., description="JPEG or PNG photo of the dish to analyze"),
+    restaurant_context: Optional[str] = Form(
+        None,
+        description=(
+            "Optional restaurant name (or 'Home Cooked') selected by the user. "
+            "When provided, the Gemini prompt is augmented with establishment context "
+            "to improve dish-name and ingredient accuracy."
+        ),
+    ),
 ) -> DishAnalysisResponse:
     """
     Full image-to-nutrition pipeline:
 
     1. **Gemini 2.5 Flash Lite** identifies the dish name and ingredient list from the photo.
+       If ``restaurant_context`` is supplied the prompt is enriched with that context so the
+       model can tailor its response to the specific establishment.
     2. **ChromaDB RAG retrieval** looks up the best nutritional match for each ingredient.
     3. Returns a :class:`DishAnalysisResponse` with per-ingredient macros and dish-level totals.
 
@@ -313,9 +323,16 @@ async def analyze_dish(
 
     mime_type = file.content_type or "image/jpeg"
 
+    # Normalise empty string to None so the prompt builder treats it as absent
+    resolved_context = restaurant_context.strip() if restaurant_context else None
+
     # ── 2. Gemini: extract dish name + ingredients ────────────────────────────
     try:
-        dish_info = extract_ingredients_from_image(image_bytes, mime_type=mime_type)
+        dish_info = extract_ingredients_from_image(
+            image_bytes,
+            mime_type=mime_type,
+            restaurant_context=resolved_context,
+        )
     except ValueError as exc:
         # Missing API key or unparseable model response
         raise HTTPException(status_code=422, detail=str(exc)) from exc

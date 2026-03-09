@@ -106,8 +106,8 @@ def _init_session_state() -> None:
     st.session_state.setdefault("current_dish_analysis", None)
     st.session_state.setdefault("last_estimate", None)
 
-    # Restaurant tagging (dish search / log section)
-    st.session_state.setdefault("restaurant_home_cooked", True)
+    # Restaurant tagging (image upload section)
+    st.session_state.setdefault("restaurant_home_cooked", False)
     st.session_state.setdefault("restaurant_results", [])
     st.session_state.setdefault("selected_restaurant", None)
 
@@ -200,7 +200,7 @@ def render_dish_detail(result: DishAnalysisResponse, *, label: str = "Dish Detai
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _render_image_analysis_section(client: NutriGraphClient) -> None:
-    """Image upload widget and 'Analyze Dish' action button (Step 1)."""
+    """Image upload widget, restaurant tagging, and 'Analyze Dish' button (Step 1)."""
     st.subheader("📸 Step 1 — Upload Dish Photo")
 
     uploaded_file = st.file_uploader(
@@ -215,13 +215,28 @@ def _render_image_analysis_section(client: NutriGraphClient) -> None:
         with col_img:
             st.image(uploaded_file, caption=uploaded_file.name, use_container_width=True)
 
+        # ── Restaurant tagging ─────────────────────────────────────────────────
+        st.markdown("#### Where is this meal from?")
+        _render_restaurant_tagging(client)
+
+        st.write("")  # spacing before the action button
+
         if st.button("🔍 Analyze Dish", type="primary", use_container_width=True):
+            # Resolve the restaurant selection to a plain string for the backend.
+            _selected = st.session_state.get("selected_restaurant")
+            if isinstance(_selected, dict):
+                _restaurant_context: str | None = _selected.get("name")
+            elif isinstance(_selected, str):
+                _restaurant_context = _selected  # "Home Cooked"
+            else:
+                _restaurant_context = None
+
             with st.spinner("Analyzing image and retrieving nutritional data…"):
                 try:
                     uploaded_file.seek(0)
                     image_bytes = uploaded_file.read()
                     response: DishAnalysisResponse = client.analyze_dish_image(
-                        image_bytes, uploaded_file.name
+                        image_bytes, uploaded_file.name, _restaurant_context
                     )
                     st.session_state.current_dish_analysis = response.model_dump()
 
@@ -241,6 +256,70 @@ def _render_image_analysis_section(client: NutriGraphClient) -> None:
 
     else:
         st.info("Upload a dish photo above and click **Analyze Dish** to get started.")
+
+
+def _render_restaurant_tagging(client: NutriGraphClient) -> None:
+    """
+    Home Cooked Meal checkbox + two-step Google Places restaurant search.
+
+    Writes the resolved selection into ``st.session_state.selected_restaurant``:
+    - ``"Home Cooked"`` when the checkbox is ticked.
+    - A ``dict`` with ``place_id``, ``name``, ``address`` when a Places result
+      is picked from the selectbox.
+    - ``None`` when the user hasn't completed the search yet.
+    """
+    home_cooked = st.checkbox(
+        "Home Cooked Meal",
+        value=st.session_state.restaurant_home_cooked,
+        key="restaurant_home_cooked",
+    )
+
+    if home_cooked:
+        st.session_state.selected_restaurant = "Home Cooked"
+        return
+
+    # Two-step Places search when not home cooked
+    rest_col1, rest_col2 = st.columns([3, 1])
+    with rest_col1:
+        rest_query = st.text_input(
+            "Search Restaurant Name",
+            placeholder="e.g., Shake Shack Manhattan",
+            key="diner_restaurant_query",
+        )
+    with rest_col2:
+        st.write("")  # vertical alignment nudge
+        find_clicked = st.button(
+            "Find Restaurant",
+            key="diner_find_restaurant",
+            use_container_width=True,
+        )
+
+    if find_clicked:
+        if not rest_query.strip():
+            st.warning("Enter a restaurant name to search.")
+        else:
+            with st.spinner("Searching for restaurants…"):
+                try:
+                    results = client.search_restaurants(rest_query)
+                    st.session_state.restaurant_results = results
+                    st.session_state.selected_restaurant = None
+                    if not results:
+                        st.info("No restaurants found. Try a different search term.")
+                except NutriGraphAPIError as exc:
+                    st.error(f"Restaurant search failed: {exc}")
+                    st.session_state.restaurant_results = []
+
+    if st.session_state.restaurant_results:
+        options = st.session_state.restaurant_results
+        labels = [f"{p['name']} — {p['address']}" for p in options]
+        selected_idx = st.selectbox(
+            "Select your restaurant",
+            options=range(len(labels)),
+            format_func=lambda i: labels[i],
+            key="diner_restaurant_selectbox",
+        )
+        chosen = options[selected_idx]
+        st.session_state.selected_restaurant = chosen
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -715,70 +794,20 @@ def _render_dish_search_section(client: NutriGraphClient) -> None:
     """Text-based dish search using the mock/RAG estimation pipeline."""
     st.subheader("🔍 Dish Search / Log")
 
-    dish_name = st.text_input(
-        "Dish name",
-        placeholder="e.g., Chicken Alfredo Pasta",
-        key="diner_dish_name",
-    )
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        dish_name = st.text_input(
+            "Dish name",
+            placeholder="e.g., Chicken Alfredo Pasta",
+            key="diner_dish_name",
+        )
+    with col2:
+        restaurant_name = st.text_input(
+            "Restaurant (optional)",
+            placeholder="e.g., Olive Garden",
+            key="diner_restaurant",
+        )
 
-    # ── Restaurant tagging ────────────────────────────────────────────────────
-    home_cooked = st.checkbox(
-        "Home Cooked Meal",
-        value=st.session_state.restaurant_home_cooked,
-        key="restaurant_home_cooked",
-    )
-
-    resolved_restaurant: str | None = None
-
-    if home_cooked:
-        st.session_state.selected_restaurant = "Home Cooked"
-        resolved_restaurant = "Home Cooked"
-    else:
-        # Two-step Google Places search
-        rest_col1, rest_col2 = st.columns([3, 1])
-        with rest_col1:
-            rest_query = st.text_input(
-                "Search Restaurant Name",
-                placeholder="e.g., Shake Shack Manhattan",
-                key="diner_restaurant_query",
-            )
-        with rest_col2:
-            st.write("")  # vertical alignment nudge
-            find_clicked = st.button(
-                "Find Restaurant",
-                key="diner_find_restaurant",
-                use_container_width=True,
-            )
-
-        if find_clicked:
-            if not rest_query.strip():
-                st.warning("Enter a restaurant name to search.")
-            else:
-                with st.spinner("Searching for restaurants…"):
-                    try:
-                        results = client.search_restaurants(rest_query)
-                        st.session_state.restaurant_results = results
-                        st.session_state.selected_restaurant = None
-                        if not results:
-                            st.info("No restaurants found. Try a different search term.")
-                    except NutriGraphAPIError as exc:
-                        st.error(f"Restaurant search failed: {exc}")
-                        st.session_state.restaurant_results = []
-
-        if st.session_state.restaurant_results:
-            options = st.session_state.restaurant_results
-            labels = [f"{p['name']} — {p['address']}" for p in options]
-            selected_idx = st.selectbox(
-                "Select your restaurant",
-                options=range(len(labels)),
-                format_func=lambda i: labels[i],
-                key="diner_restaurant_selectbox",
-            )
-            chosen = options[selected_idx]
-            st.session_state.selected_restaurant = chosen
-            resolved_restaurant = chosen["name"]
-
-    # ── Estimate nutrition ────────────────────────────────────────────────────
     if st.button("🔮 Estimate Nutrition", type="primary", use_container_width=True):
         if not dish_name:
             st.warning("Please enter a dish name.")
@@ -787,7 +816,7 @@ def _render_dish_search_section(client: NutriGraphClient) -> None:
         with st.spinner("Estimating nutrition…"):
             dish = Dish(
                 name=dish_name,
-                restaurant=resolved_restaurant,
+                restaurant=restaurant_name if restaurant_name else None,
             )
             estimate = client.estimate_nutrition(dish)
             mock_ingredients = generate_mock_ingredients(dish_name)
