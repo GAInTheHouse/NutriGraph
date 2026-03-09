@@ -427,8 +427,15 @@ def _build_refined_result(
 
 
 def _reset_clarification() -> None:
-    """Clear all clarification-related session state keys."""
+    """Clear all clarification-related session state keys, including widget state.
+
+    Widget keys (prefixed ``clar_``) must be explicitly popped so that
+    Streamlit does not reuse stale values to prefill inputs on the next render.
+    For example, ``clar_user_answer_input`` would otherwise carry the previous
+    reply text into the first question of a new analysis session.
+    """
     for key in (
+        # Agent state
         "clar_active",
         "clar_original_names",
         "clar_query_names",
@@ -439,6 +446,9 @@ def _reset_clarification() -> None:
         "clar_error",
         "clar_initial_scores",
         "clar_prev_scores",
+        # Widget state — must be cleared to prevent Streamlit from prefilling
+        # the reply form with a value from the previous clarification session.
+        "clar_user_answer_input",
     ):
         st.session_state.pop(key, None)
 
