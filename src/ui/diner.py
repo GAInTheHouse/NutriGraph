@@ -14,7 +14,7 @@ This module handles the consumer-facing interface for:
   - Submitting accuracy feedback
 """
 import json
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import streamlit as st
@@ -203,7 +203,9 @@ def _append_diner_history_entry(analysis: DishAnalysisResponse) -> None:
     remain in the backend DB.  This keeps the file small while still being
     enough for search + daily tracking.
     """
-    history = _load_diner_history()
+    base_history = _load_diner_history()
+    # Work on a copy so a failed write does not mutate the in-memory cache.
+    history = list(base_history)
 
     # Resolve a human-readable restaurant label from session state.
     restaurant_label: str | None = None
@@ -220,7 +222,7 @@ def _append_diner_history_entry(analysis: DishAnalysisResponse) -> None:
         "protein": float(analysis.total_protein),
         "carbs": float(analysis.total_carbs),
         "fat": float(analysis.total_fat),
-        "created_at": datetime.utcnow().isoformat(),
+        "created_at": datetime.now(timezone.utc).isoformat(),
     }
     history.append(entry)
 
@@ -229,7 +231,8 @@ def _append_diner_history_entry(analysis: DishAnalysisResponse) -> None:
         _DINER_HISTORY_PATH.write_text(json.dumps(history, indent=2), encoding="utf-8")
         st.session_state.diner_history_cache = history
     except Exception:
-        # History is a best-effort local feature; failures should not block saving.
+        # History is a best-effort feature; failures should not block saving,
+        # but we intentionally do not update the cache when the write fails.
         pass
 
 
@@ -874,9 +877,16 @@ def _render_clarification_section(client: NutriGraphClient) -> None:
     # If the agent is currently re-running after a user reply, process the
     # pending answers once and show only a spinner while doing so.
     if st.session_state.get("clar_busy"):
-        with st.spinner("Re-analysing all ingredients…"):
-            _process_pending_clarification()
-        st.session_state.clar_busy = False
+        try:
+            with st.spinner("Re-analysing all ingredients…"):
+                _process_pending_clarification()
+        except Exception as exc:
+            # Ensure we don't get stuck in a busy loop if something goes wrong.
+            st.session_state.clar_busy = False
+            st.session_state.clar_pending = None
+            st.error(f"⚠️ Clarification step failed: {exc}")
+        else:
+            st.session_state.clar_busy = False
         st.rerun()
         return
 
@@ -1072,7 +1082,6 @@ def _render_clarification_section(client: NutriGraphClient) -> None:
     with st.form("clar_reply_form", clear_on_submit=True):
         answer_keys: list[int] = []
         for i, (target_idx, q, ing) in enumerate(zip(filtered_indices, filtered_questions, filtered_ingredients)):
-            placeholder_ing = original_names[target_idx] if target_idx < len(original_names) else ing
             st.markdown(f"**{ing}**")
             st.caption(q)
             st.text_input(
@@ -1283,10 +1292,14 @@ def _render_tracking_section() -> None:
 
         # If there are no meals for the selected date, fall back to totals
         # across the entire history so the widget is always populated once
-        # the user has at least one saved dish.
+        # the user has at least one saved dish — but make this explicit.
         if day_entries:
             totals_source = day_entries
         else:
+            st.caption(
+                f"No meals found for {selected_date.isoformat()}. "
+                "Showing all-time totals instead."
+            )
             totals_source = history
 
         total_cal = sum(float(h.get("calories", 0.0)) for h in totals_source)
