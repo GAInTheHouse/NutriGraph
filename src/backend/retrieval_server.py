@@ -5,14 +5,16 @@ Exposes a retrieval endpoint that takes a list of ingredient texts and returns
 the closest matches from the ChromaDB ingredient index.
 """
 
+import json
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional
 
 import chromadb
-from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field, field_validator
 from sentence_transformers import SentenceTransformer
+from sqlalchemy.orm import Session
 
 # Ensure the project root is on sys.path so src.* imports resolve correctly
 # when the server is launched from any working directory.
@@ -20,9 +22,12 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from src.core.models import AnalyzedIngredient, DishAnalysisResponse, PlacesResponse  # noqa: E402
-from src.ml.extract_ingredients import extract_ingredients_from_image  # noqa: E402
+from src.core.models import AnalyzedIngredient, Dish, DishAnalysisResponse, NutritionEstimate, PlacesResponse  # noqa: E402
+from src.ml.extract_ingredients import extract_ingredients_from_image, _HISTORICAL_CONTEXT_SNIPPET  # noqa: E402
 from src.backend.places_client import GooglePlacesClient, PlacesAPIError  # noqa: E402
+from src.backend.database import engine, get_db  # noqa: E402
+from src.backend.db_models import Base, DishRecord  # noqa: E402
+from src.backend.crud import get_dish_record, get_dishes_for_place, save_dish_record  # noqa: E402
 
 
 PROJECT_ROOT = _PROJECT_ROOT
@@ -93,6 +98,31 @@ app = FastAPI(
     version="0.1.0",
     description="Retrieval endpoints for NutriGraph ingredient index.",
 )
+
+
+# ── Create DB tables on startup (no-op if they already exist) ─────────────────
+@app.on_event("startup")
+def _create_tables() -> None:
+    Base.metadata.create_all(bind=engine)
+
+
+# ── Pydantic models for the new persistence endpoints ─────────────────────────
+
+class SaveDishRequest(BaseModel):
+    """Payload sent by a diner when they explicitly save their analysis."""
+    analysis: DishAnalysisResponse
+    place_id: Optional[str] = None
+
+
+class PublishDishRequest(BaseModel):
+    """Payload sent by a restaurant owner to publish verified dish macros."""
+    dish_name: str = Field(..., min_length=1)
+    place_id: str = Field(..., min_length=1)
+    calories: float = Field(..., ge=0)
+    protein: float = Field(..., ge=0)
+    carbs: float = Field(..., ge=0)
+    fat: float = Field(..., ge=0)
+    ingredients: List[dict] = Field(default_factory=list)
 
 
 _model: Optional[SentenceTransformer] = None
@@ -230,6 +260,84 @@ def retrieve_ingredients(payload: IngredientRetrievalRequest) -> IngredientRetri
     return IngredientRetrievalResponse(results=out)
 
 
+# ── Restaurant builder: ingredient-list → NutritionEstimate ──────────────────
+
+# Maps unit strings (matching settings.DEFAULT_UNITS) to their gram equivalent.
+# Used to scale per-100g ChromaDB macro values by each ingredient's actual quantity.
+_UNIT_TO_GRAMS: Dict[str, float] = {
+    "g": 1.0,
+    "oz": 28.35,
+    "cup": 240.0,
+    "tbsp": 15.0,
+    "tsp": 5.0,
+    "piece": 100.0,
+    "ml": 1.0,
+}
+
+
+@app.post(
+    "/api/v1/builder/generate",
+    response_model=NutritionEstimate,
+    tags=["builder"],
+    summary="Calculate dish-level macros from an explicit ingredient list via ChromaDB RAG",
+)
+def builder_generate_profile(payload: Dish) -> NutritionEstimate:
+    """
+    Restaurant builder endpoint: given a :class:`Dish` with named ingredients,
+    quantities, and units, look up per-100g nutritional values from ChromaDB for
+    each ingredient, scale by the actual quantity, sum to dish-level totals, and
+    return a :class:`NutritionEstimate`.
+
+    Unlike the image-analysis pipeline, no LLM is involved — the calculation is
+    deterministic and reproducible from the ingredient list.
+
+    Confidence is the average of the individual ChromaDB retrieval confidence
+    scores, giving the restaurant owner a signal about how well each ingredient
+    was matched in the index.
+    """
+    collection = _get_collection_or_raise()
+    embed_model = _get_embedding_model()
+
+    ingredient_names = [ing.name.strip() for ing in payload.ingredients if ing.name.strip()]
+    nutrition_map = _lookup_nutrition(ingredient_names, collection, embed_model)
+
+    total_cal = total_pro = total_carb = total_fat = 0.0
+    confidence_scores: List[float] = []
+
+    for ing in payload.ingredients:
+        name = ing.name.strip()
+        if not name:
+            continue
+        if ing.unit not in _UNIT_TO_GRAMS:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Unsupported unit '{ing.unit}' for ingredient '{name}'. "
+                    f"Accepted units: {sorted(_UNIT_TO_GRAMS)}."
+                ),
+            )
+        n = nutrition_map.get(name, {})
+        # Scale the per-100g ChromaDB values by the actual quantity in grams.
+        factor = ing.quantity * _UNIT_TO_GRAMS[ing.unit] / 100.0
+        total_cal   += n.get("energy_kcal",     0.0) * factor
+        total_pro   += n.get("protein_g",        0.0) * factor
+        total_carb  += n.get("carbohydrates_g",  0.0) * factor
+        total_fat   += n.get("fat_g",            0.0) * factor
+        confidence_scores.append(n.get("confidence", 0.0))
+
+    avg_confidence = (
+        sum(confidence_scores) / len(confidence_scores) if confidence_scores else 0.0
+    )
+
+    return NutritionEstimate(
+        calories=round(total_cal, 1),
+        protein_g=round(total_pro, 1),
+        carbs_g=round(total_carb, 1),
+        fat_g=round(total_fat, 1),
+        confidence=round(avg_confidence, 4),
+    )
+
+
 # ── Dish image analysis ───────────────────────────────────────────────────────
 
 def _distance_to_confidence(distance: float) -> float:
@@ -294,7 +402,7 @@ def _lookup_nutrition(
     tags=["analysis"],
     summary="Analyze a dish photo and return a full nutritional breakdown",
 )
-async def analyze_dish(
+def analyze_dish(
     file: UploadFile = File(..., description="JPEG or PNG photo of the dish to analyze"),
     restaurant_context: Optional[str] = Form(
         None,
@@ -304,57 +412,132 @@ async def analyze_dish(
             "to improve dish-name and ingredient accuracy."
         ),
     ),
+    dish_name: Optional[str] = Form(
+        None,
+        description=(
+            "Optional dish-name hint provided by the user before analysis. "
+            "When supplied, the database is checked first: a restaurant-verified record "
+            "is returned immediately (fast path); diner records are used as coaching "
+            "context for the Gemini prompt (context path)."
+        ),
+    ),
+    restaurant_place_id: Optional[str] = Form(
+        None,
+        description="Google Places place_id of the selected restaurant, or None for home-cooked.",
+    ),
+    db: Session = Depends(get_db),
 ) -> DishAnalysisResponse:
     """
-    Full image-to-nutrition pipeline:
+    Full image-to-nutrition pipeline with database-backed caching.
 
-    1. **Gemini 2.5 Flash Lite** identifies the dish name and ingredient list from the photo.
-       If ``restaurant_context`` is supplied the prompt is enriched with that context so the
-       model can tailor its response to the specific establishment.
-    2. **ChromaDB RAG retrieval** looks up the best nutritional match for each ingredient.
-    3. Returns a :class:`DishAnalysisResponse` with per-ingredient macros and dish-level totals.
+    **Routing logic** (only applied when ``dish_name`` is provided):
 
-    Requires `VERTEXAI_API_KEY` to be set in the environment (or `.env` file).
+    1. **Fast path** — if the database contains a restaurant-verified record for this
+       ``(dish_name, place_id)`` pair, it is returned immediately without calling Gemini.
+    2. **Context path** — if the database contains diner records, their macro averages
+       are injected into the Gemini prompt as coaching context for consistency.
+    3. **Standard path** — no prior records; Gemini runs with no extra context.
+
+    After the LLM pipeline runs (paths 2 & 3), the result is returned to the UI.
+    The user decides whether to save it via the separate ``/diner/save-dish`` endpoint.
+
+    Requires ``VERTEXAI_API_KEY`` to be set in the environment (or ``.env`` file).
     """
     # ── 1. Read image bytes ───────────────────────────────────────────────────
-    image_bytes = await file.read()
+    image_bytes = file.file.read()
     if not image_bytes:
         raise HTTPException(status_code=422, detail="Uploaded file is empty.")
 
     mime_type = file.content_type or "image/jpeg"
-
-    # Normalise empty string to None so the prompt builder treats it as absent
     resolved_context = restaurant_context.strip() if restaurant_context else None
+    resolved_dish_name = dish_name.strip() if dish_name else None
+    resolved_place_id = restaurant_place_id.strip() if restaurant_place_id else None
 
-    # ── 2. Gemini: extract dish name + ingredients ────────────────────────────
+    # ── 2. Database routing (only when the user supplied a dish name hint) ────
+    historical_context_str: Optional[str] = None
+    data_source = "ai_generated"
+
+    if resolved_dish_name:
+        records: List[DishRecord] = get_dish_record(db, resolved_dish_name, resolved_place_id)
+
+        if records and records[0].source == "restaurant":
+            # ── Fast path: return the restaurant-verified record immediately ──
+            record = records[0]
+            try:
+                cached_ingredients: List[AnalyzedIngredient] = [
+                    AnalyzedIngredient(**ing)
+                    for ing in json.loads(record.ingredients_json or "[]")
+                ]
+            except Exception:
+                cached_ingredients = []
+
+            return DishAnalysisResponse(
+                dish_name=record.dish_name,
+                total_calories=record.calories,
+                total_protein=record.protein,
+                total_carbs=record.carbs,
+                total_fat=record.fat,
+                ingredients=cached_ingredients,
+                is_cached=True,
+                data_source="restaurant_verified",
+            )
+
+        if records:
+            # ── Context path: build historical coaching string from diner records ──
+            avg_cal = sum(r.calories for r in records) / len(records)
+            avg_pro = sum(r.protein for r in records) / len(records)
+            avg_carb = sum(r.carbs for r in records) / len(records)
+            avg_fat = sum(r.fat for r in records) / len(records)
+
+            # Collect all previously identified ingredient names (deduplicated).
+            all_ing_names: list[str] = []
+            for r in records:
+                try:
+                    for ing in json.loads(r.ingredients_json or "[]"):
+                        name = ing.get("name", "")
+                        if name and name not in all_ing_names:
+                            all_ing_names.append(name)
+                except Exception:
+                    pass
+            ing_list_str = ", ".join(all_ing_names[:15]) if all_ing_names else "not available"
+
+            historical_context_str = _HISTORICAL_CONTEXT_SNIPPET.format(
+                calories=round(avg_cal, 1),
+                protein=round(avg_pro, 1),
+                carbs=round(avg_carb, 1),
+                fat=round(avg_fat, 1),
+                ingredients=ing_list_str,
+            )
+            data_source = "diner_cached"
+
+    # ── 3. Gemini: extract dish name + ingredients ────────────────────────────
     try:
         dish_info = extract_ingredients_from_image(
             image_bytes,
             mime_type=mime_type,
             restaurant_context=resolved_context,
+            historical_context=historical_context_str,
         )
     except ValueError as exc:
-        # Missing API key or unparseable model response
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except RuntimeError as exc:
-        # Vertex AI returned a non-2xx response
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(
             status_code=500, detail=f"Unexpected error during image analysis: {exc}"
         ) from exc
 
-    dish_name: str = dish_info.get("dish_name", "Analyzed Dish")
+    llm_dish_name: str = dish_info.get("dish_name", "Analyzed Dish").strip() or "Analyzed Dish"
     ingredient_names: List[str] = [
         i.strip() for i in dish_info.get("ingredients", []) if i and i.strip()
     ]
 
-    # ── 3. ChromaDB: look up nutrition for each ingredient ────────────────────
+    # ── 4. ChromaDB: look up nutrition for each ingredient ────────────────────
     collection = _get_collection_or_raise()
     embed_model = _get_embedding_model()
     nutrition_map = _lookup_nutrition(ingredient_names, collection, embed_model)
 
-    # ── 4. Assemble response ──────────────────────────────────────────────────
+    # ── 5. Assemble and return response (no auto-save) ────────────────────────
     analyzed: List[AnalyzedIngredient] = []
     for name in ingredient_names:
         n = nutrition_map.get(name, {})
@@ -370,11 +553,106 @@ async def analyze_dish(
         )
 
     return DishAnalysisResponse(
-        dish_name=dish_name,
+        dish_name=llm_dish_name,
         total_calories=round(sum(a.calories for a in analyzed), 1),
         total_protein=round(sum(a.protein for a in analyzed), 1),
         total_carbs=round(sum(a.carbs for a in analyzed), 1),
         total_fat=round(sum(a.fat for a in analyzed), 1),
         ingredients=analyzed,
+        is_cached=False,
+        data_source=data_source,
     )
+
+
+# ── Diner: explicit save endpoint ─────────────────────────────────────────────
+
+@app.post(
+    "/api/v1/diner/save-dish",
+    tags=["analysis"],
+    summary="Explicitly save a diner's reviewed nutritional analysis to the database",
+)
+def save_diner_dish(
+    payload: SaveDishRequest,
+    db: Session = Depends(get_db),
+) -> Dict[str, str]:
+    """
+    Called by the Diner UI when the user clicks "Save Results" or
+    "Save Refined Results".  Persists the provided :class:`DishAnalysisResponse`
+    as a ``source="diner"`` record.
+
+    The LLM pipeline never auto-saves; this endpoint gives the user full
+    control over when their data enters the database.
+    """
+    save_dish_record(db, payload.analysis, payload.place_id, source="diner")
+    db.commit()
+    return {"status": "saved"}
+
+
+# ── Restaurant: publish endpoint ──────────────────────────────────────────────
+
+@app.post(
+    "/api/v1/restaurant/publish-dish",
+    tags=["restaurant"],
+    summary="Publish verified dish macros from a restaurant owner",
+)
+def publish_restaurant_dish(
+    payload: PublishDishRequest,
+    db: Session = Depends(get_db),
+) -> Dict[str, str]:
+    """
+    Called by the Restaurant UI when the owner clicks "Publish to Global Catalog".
+    Stores the dish as ``source="restaurant"`` so future diner analyses for the same
+    ``(dish_name, place_id)`` pair are served from this verified record instantly.
+    """
+    # Build a DishAnalysisResponse so we can reuse save_dish_record.
+    try:
+        ingredients = [AnalyzedIngredient(**ing) for ing in payload.ingredients]
+    except Exception:
+        ingredients = []
+
+    analysis = DishAnalysisResponse(
+        dish_name=payload.dish_name.strip(),
+        total_calories=payload.calories,
+        total_protein=payload.protein,
+        total_carbs=payload.carbs,
+        total_fat=payload.fat,
+        ingredients=ingredients,
+        is_cached=False,
+        data_source="restaurant_verified",
+    )
+    save_dish_record(db, analysis, payload.place_id.strip(), source="restaurant")
+    db.commit()
+    return {"status": "published"}
+
+
+# ── Restaurant: list published dishes ─────────────────────────────────────────
+
+@app.get(
+    "/api/v1/restaurant/dishes",
+    tags=["restaurant"],
+    summary="List all restaurant-verified dishes for a given place_id",
+)
+def list_restaurant_dishes(
+    place_id: str = Query(..., description="Google Places place_id for the restaurant"),
+    db: Session = Depends(get_db),
+) -> Dict:
+    """
+    Returns all ``source="restaurant"`` records stored for the given place_id.
+    Used by the Restaurant UI to reload the catalog across sessions.
+    """
+    records = get_dishes_for_place(db, place_id, source="restaurant")
+    dishes = [
+        {
+            "name": r.dish_name,
+            "serving_size": None,
+            "ingredient_count": len(json.loads(r.ingredients_json or "[]")),
+            "calories": r.calories,
+            "protein_g": r.protein,
+            "carbs_g": r.carbs,
+            "fat_g": r.fat,
+            "confidence": None,
+        }
+        for r in records
+    ]
+    return {"dishes": dishes}
 

@@ -69,12 +69,12 @@ def render_diner(client: NutriGraphClient) -> None:
     st.divider()
 
     # ── Step 1 result: one-shot Dish Detail View ──────────────────────────────
-    _render_analysis_detail_section()
+    _render_analysis_detail_section(client)
 
     st.divider()
 
     # ── Step 2 + 3: Agent clarification loop & refined final result ───────────
-    _render_clarification_section()
+    _render_clarification_section(client)
 
     st.divider()
 
@@ -110,6 +110,9 @@ def _init_session_state() -> None:
     st.session_state.setdefault("restaurant_home_cooked", False)
     st.session_state.setdefault("restaurant_results", [])
     st.session_state.setdefault("selected_restaurant", None)
+
+    # Persistence: tracks whether the current result has been saved to avoid duplicates
+    st.session_state.setdefault("dish_saved", False)
 
     # Clarification agent state
     st.session_state.setdefault("clar_active", False)
@@ -219,26 +222,53 @@ def _render_image_analysis_section(client: NutriGraphClient) -> None:
         st.markdown("#### Where is this meal from?")
         _render_restaurant_tagging(client)
 
+        # ── Optional dish-name hint ────────────────────────────────────────────
+        st.markdown("#### Dish name hint (optional)")
+        st.caption(
+            "If you already know the dish name, enter it here to check our database "
+            "first — you may get an instant restaurant-verified result or AI coaching "
+            "from past analyses."
+        )
+        dish_name_hint = st.text_input(
+            "Dish name",
+            placeholder="e.g., Grilled Salmon Bowl",
+            key="diner_dish_name_hint",
+            label_visibility="collapsed",
+        )
+
         st.write("")  # spacing before the action button
 
         if st.button("🔍 Analyze Dish", type="primary", use_container_width=True):
-            # Resolve the restaurant selection to a plain string for the backend.
+            # Resolve the restaurant selection to a plain string and place_id.
             _selected = st.session_state.get("selected_restaurant")
             if isinstance(_selected, dict):
                 _restaurant_context: str | None = _selected.get("name")
+                _place_id: str | None = _selected.get("place_id")
             elif isinstance(_selected, str):
                 _restaurant_context = _selected  # "Home Cooked"
+                _place_id = None
             else:
                 _restaurant_context = None
+                _place_id = None
+
+            _hint = dish_name_hint.strip() if dish_name_hint else None
 
             with st.spinner("Analyzing image and retrieving nutritional data…"):
                 try:
                     uploaded_file.seek(0)
                     image_bytes = uploaded_file.read()
                     response: DishAnalysisResponse = client.analyze_dish_image(
-                        image_bytes, uploaded_file.name, _restaurant_context
+                        image_bytes,
+                        uploaded_file.name,
+                        _restaurant_context,
+                        dish_name=_hint,
+                        place_id=_place_id,
                     )
                     st.session_state.current_dish_analysis = response.model_dump()
+                    # Store place_id so save buttons can forward it
+                    st.session_state.current_place_id = _place_id
+                    # Reset the saved flag whenever a new analysis comes in
+                    st.session_state.dish_saved = False
 
                 except NutriGraphAPIError as exc:
                     st.error(f"⚠️ Analysis failed: {exc}")
@@ -334,7 +364,7 @@ def _render_restaurant_tagging(client: NutriGraphClient) -> None:
 # Step 1 result — one-shot dish detail view
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _render_analysis_detail_section() -> None:
+def _render_analysis_detail_section(client: NutriGraphClient) -> None:
     """One-shot Dish Detail View rendered right after the image is analysed."""
     if not st.session_state.get("current_dish_analysis"):
         st.subheader("📊 Dish Detail View")
@@ -342,12 +372,58 @@ def _render_analysis_detail_section() -> None:
         return
 
     analysis = DishAnalysisResponse(**st.session_state.current_dish_analysis)
+
+    # ── Cache / data-source badge ──────────────────────────────────────────────
+    data_source = analysis.data_source
+    if data_source == "restaurant_verified":
+        st.info(
+            "✅ **Verified by Restaurant** — these macros were published by the restaurant "
+            "owner and are served directly from our database. No AI estimation was performed."
+        )
+    elif data_source == "diner_cached":
+        st.info(
+            "🔄 **Enhanced by Past Diner Data** — previous analyses of this dish were used "
+            "to coach the AI for greater consistency. The image is still the primary source."
+        )
+
     render_dish_detail(analysis, label="Dish Detail View (one-shot estimate)")
 
-    if st.button("🗑️ Clear Analysis", key="clear_analysis"):
-        st.session_state.current_dish_analysis = None
-        _reset_clarification()
+    # ── Save Results button (enabled as soon as macros are populated) ──────────
+    col_save, col_clear = st.columns([2, 1])
+    with col_save:
+        already_saved = st.session_state.get("dish_saved", False)
+        if already_saved:
+            st.success("✅ Saved to your history!")
+        elif not analysis.is_cached:
+            # Only offer to save AI-generated results (cached restaurant results
+            # are already in the DB as the authoritative source).
+            if st.button(
+                "💾 Save Results",
+                key="save_oneshot_results",
+                help="Save this nutritional analysis to your history. "
+                     "You can improve accuracy first using the clarification agent below.",
+                use_container_width=True,
+            ):
+                _save_analysis(client, analysis)
+
+    with col_clear:
+        if st.button("🗑️ Clear Analysis", key="clear_analysis", use_container_width=True):
+            st.session_state.current_dish_analysis = None
+            st.session_state.dish_saved = False
+            st.session_state.pop("current_place_id", None)
+            _reset_clarification()
+            st.rerun()
+
+
+def _save_analysis(client: NutriGraphClient, analysis: DishAnalysisResponse) -> None:
+    """Helper: call the save endpoint and update session state."""
+    place_id = st.session_state.get("current_place_id")
+    try:
+        client.save_dish_result(analysis, place_id=place_id)
+        st.session_state.dish_saved = True
         st.rerun()
+    except NutriGraphAPIError as exc:
+        st.error(f"⚠️ Could not save: {exc}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -538,6 +614,9 @@ def _reset_clarification() -> None:
         "clar_error",
         "clar_initial_scores",
         "clar_prev_scores",
+        # Persistence flags
+        "dish_saved",
+        "current_place_id",
         # Widget state — must be cleared to prevent Streamlit from prefilling
         # the reply form with a value from the previous clarification session.
         "clar_user_answer_input",
@@ -549,7 +628,7 @@ def _reset_clarification() -> None:
 # Step 2 + 3 — clarification chat loop and refined final result
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _render_clarification_section() -> None:
+def _render_clarification_section(client: NutriGraphClient) -> None:
     """
     Render the agent-assisted clarification chat (Steps 2 & 3).
 
@@ -691,6 +770,20 @@ def _render_clarification_section() -> None:
                 refined,
                 label="Agent-refined Nutritional Estimate (after clarifications)",
             )
+
+            # ── Save Refined Results button ────────────────────────────────────
+            already_saved = st.session_state.get("dish_saved", False)
+            if already_saved:
+                st.success("✅ Saved to your history!")
+            else:
+                if st.button(
+                    "💾 Save Refined Results",
+                    key="save_refined_results",
+                    type="primary",
+                    help="Save the agent-refined estimate — this supersedes any earlier save.",
+                    use_container_width=True,
+                ):
+                    _save_analysis(client, refined)
 
         if st.button("🔄 Clear & Start Over", key="clar_reset"):
             _reset_clarification()

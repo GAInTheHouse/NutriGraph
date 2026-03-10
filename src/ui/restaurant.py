@@ -17,6 +17,54 @@ from .components import (
     export_catalog_to_csv
 )
 
+# Session-state keys that are logically scoped to a single restaurant.
+# They must be cleared whenever the active restaurant changes so that data
+# from one restaurant cannot leak into — or be published under — another.
+_RESTAURANT_SCOPED_KEYS: list[str] = [
+    "last_generated_profile",
+    "dish_published",
+    "restaurant_ingredients",
+    "catalog",
+    "catalog_loaded_for",
+]
+
+
+def _load_catalog_from_db(client: NutriGraphClient) -> None:
+    """
+    Populate ``st.session_state.catalog`` from the DB for the active restaurant.
+
+    Runs at most once per confirmed profile per session: the ``catalog_loaded_for``
+    key tracks which place_id we last loaded so repeated Streamlit rerenders don't
+    trigger redundant network calls.
+    """
+    profile = st.session_state.get("current_restaurant_profile")
+    if not profile:
+        return
+
+    place_id = profile.get("place_id", "")
+    if not place_id:
+        return
+
+    if st.session_state.get("catalog_loaded_for") == place_id:
+        return
+
+    st.session_state.setdefault("catalog", [])
+    try:
+        dishes = client.get_restaurant_dishes(place_id)
+    except NutriGraphAPIError as e:
+        # Surface a user-visible error and allow retries on subsequent rerenders.
+        st.error(
+            "We couldn't load your existing catalog right now. "
+            "You can still create dishes; we'll retry loading automatically."
+        )
+        st.session_state["catalog_load_error"] = str(e)
+        return
+    else:
+        st.session_state.catalog = dishes
+        st.session_state.catalog_loaded_for = place_id
+        # Clear any previous load error on success.
+        st.session_state.pop("catalog_load_error", None)
+
 
 def render_restaurant(client: NutriGraphClient) -> None:
     """
@@ -40,8 +88,15 @@ def render_restaurant(client: NutriGraphClient) -> None:
         )
         return
 
+    # Load the persisted catalog from the DB the first time a profile is confirmed
+    # in this session (guarded so we don't re-fetch on every Streamlit rerender).
+    _load_catalog_from_db(client)
+
     # Section 1: Create / Edit Dish
     _render_dish_builder_section(client)
+
+    # Section 1b: Publish to Global Catalog (appears after a profile is generated)
+    _render_publish_section(client)
     
     st.divider()
     
@@ -64,6 +119,8 @@ def _render_restaurant_profile_section(client: NutriGraphClient) -> None:
     """
     st.session_state.setdefault("current_restaurant_profile", None)
     st.session_state.setdefault("restaurant_profile_results", [])
+    st.session_state.setdefault("last_generated_profile", None)
+    st.session_state.setdefault("dish_published", False)
 
     st.subheader("🏪 Restaurant Profile Setup")
 
@@ -73,6 +130,8 @@ def _render_restaurant_profile_section(client: NutriGraphClient) -> None:
         if st.button("🔄 Change Restaurant", key="change_restaurant_profile"):
             st.session_state.current_restaurant_profile = None
             st.session_state.restaurant_profile_results = []
+            for key in _RESTAURANT_SCOPED_KEYS:
+                st.session_state.pop(key, None)
             st.rerun()
         return
 
@@ -126,6 +185,8 @@ def _render_restaurant_profile_section(client: NutriGraphClient) -> None:
         chosen = options[selected_idx]
 
         if st.button("Confirm Selection", key="restaurant_profile_confirm", type="primary"):
+            for key in _RESTAURANT_SCOPED_KEYS:
+                st.session_state.pop(key, None)
             st.session_state.current_restaurant_profile = {
                 "place_id": chosen["place_id"],
                 "name": chosen["name"],
@@ -267,8 +328,22 @@ def _handle_generate_profile(
             ingredients=st.session_state.restaurant_ingredients
         )
         
-        # Generate profile (currently mocked)
-        estimate = client.builder_generate_profile(dish)
+        # Generate nutrition profile via NutriGraph API
+        try:
+            estimate = client.builder_generate_profile(dish)
+        except NutriGraphAPIError as exc:
+            st.error(f"Failed to generate nutrition profile: {exc}")
+            return
+        
+        # Persist to session state so the Publish button can reference it
+        st.session_state.last_generated_profile = {
+            "dish_name": dish_name,
+            "calories": estimate.calories,
+            "protein": estimate.protein_g,
+            "carbs": estimate.carbs_g,
+            "fat": estimate.fat_g,
+        }
+        st.session_state.dish_published = False
         
         # Display results
         st.success(f"Nutrition profile generated for '{dish_name}'!")
@@ -294,6 +369,94 @@ def _handle_generate_profile(
             
             # Clear ingredients for next dish
             st.session_state.restaurant_ingredients = []
+
+
+def _render_publish_section(client: NutriGraphClient) -> None:
+    """
+    Render the 'Publish to Global Catalog' panel.
+
+    Appears only after a nutrition profile has been generated in the current
+    session.  Lets the restaurant owner push their verified macros to the
+    shared database so future diner analyses for this dish are served from
+    the authoritative record rather than the LLM.
+    """
+    profile = st.session_state.get("last_generated_profile")
+    if not profile:
+        return
+
+    st.divider()
+    st.subheader("🌐 Publish to Global Catalog")
+    st.caption(
+        "Once you're happy with the macros above, publish them as the official "
+        "ground truth for this dish. Diners who order **"
+        + profile["dish_name"]
+        + "** at your restaurant will receive these verified numbers instantly."
+    )
+
+    already_published = st.session_state.get("dish_published", False)
+    if already_published:
+        st.success(
+            f"✅ **{profile['dish_name']}** has been published to the global catalog. "
+            "Future diner requests will be served from this verified record."
+        )
+        return
+
+    col_info, col_btn = st.columns([3, 1])
+    with col_info:
+        m1, m2, m3, m4 = st.columns(4)
+        with m1:
+            st.metric("🔥 Calories", f"{profile['calories']:.0f} kcal")
+        with m2:
+            st.metric("💪 Protein", f"{profile['protein']:.1f} g")
+        with m3:
+            st.metric("🌾 Carbs", f"{profile['carbs']:.1f} g")
+        with m4:
+            st.metric("🥑 Fat", f"{profile['fat']:.1f} g")
+
+    with col_btn:
+        st.write("")  # vertical alignment nudge
+        if st.button(
+            "🌐 Publish",
+            key="publish_dish_btn",
+            type="primary",
+            use_container_width=True,
+            help="Publish these macros as the restaurant-verified ground truth.",
+        ):
+            place_id = st.session_state.get("current_restaurant_profile", {}).get("place_id", "")
+            if not place_id:
+                st.error("Restaurant profile not found. Please re-select your restaurant.")
+                return
+            try:
+                client.publish_dish(
+                    dish_name=profile["dish_name"],
+                    place_id=place_id,
+                    calories=profile["calories"],
+                    protein=profile["protein"],
+                    carbs=profile["carbs"],
+                    fat=profile["fat"],
+                )
+                st.session_state.dish_published = True
+                # Add to the local catalog immediately so it shows up without a
+                # full session reload, and force catalog_loaded_for to refresh
+                # from the DB next render so the entry survives future sessions.
+                catalog_entry = {
+                    "name": profile["dish_name"],
+                    "serving_size": None,
+                    "ingredient_count": None,
+                    "calories": profile["calories"],
+                    "protein_g": profile["protein"],
+                    "carbs_g": profile["carbs"],
+                    "fat_g": profile["fat"],
+                    "confidence": None,
+                }
+                st.session_state.setdefault("catalog", [])
+                existing_names = {d.get("name") for d in st.session_state.catalog}
+                if profile["dish_name"] not in existing_names:
+                    st.session_state.catalog.append(catalog_entry)
+                st.session_state.catalog_loaded_for = None
+                st.rerun()
+            except Exception as exc:
+                st.error(f"⚠️ Publish failed: {exc}")
 
 
 def _render_catalog_section() -> None:

@@ -3,6 +3,7 @@ data/raw/
 data/processed/
 data/chroma/
 data/sample_images/
+data/nutrigraph.db
 
 # Python
 __pycache__/
