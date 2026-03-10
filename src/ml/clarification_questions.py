@@ -364,10 +364,17 @@ def refine_ingredients_batch(
             out.append(", ".join(parts)[:120])
         return out
 
-    # Build one prompt for all
+    # Only send non-empty answers to the LLM; preserve original ingredient unchanged for blank answers.
+    non_empty: List[tuple] = [(i, (orig, (ans or "").strip())) for i, (orig, ans) in enumerate(ingredients_with_answers) if (ans or "").strip()]
+    if not non_empty:
+        return [(orig or "").strip() for orig, _ in ingredients_with_answers]
+
+    indices_with_answers = [i for i, _ in non_empty]
+    items_for_prompt = [item for _, item in non_empty]
+    n_refine = len(items_for_prompt)
+
     lines = []
-    for i, (orig, ans) in enumerate(ingredients_with_answers):
-        ans = (ans or "").strip() or "(no answer)"
+    for i, (orig, ans) in enumerate(items_for_prompt):
         lines.append(f"  {i + 1}. Original: \"{orig}\" | User said: \"{ans}\"")
 
     prompt = f"""You are converting user clarifications into short phrases for a nutrition database search. Our search index uses USDA FoodData Central and OpenFoodFacts. In these datasets, names often look like: "Pasta, penne, cooked", "Peppers, bell, raw", "Chicken, breast, grilled", "Onions, raw", "Tomato sauce". Use similar vocabulary so the vector search gets a better match.
@@ -377,7 +384,7 @@ Dish: "{dish_name or "unknown"}"
 Items:
 {chr(10).join(lines)}
 
-Output a JSON object with a "refined" array of {len(ingredients_with_answers)} strings in the SAME ORDER. For each item: combine the original ingredient with keywords from the user's answer, using terms that appear in USDA/OpenFoodFacts (e.g. cooked, raw, boiled, grilled, sautéed, semolina, bell, fresh). Each output string should look like a database-style name: "original, state_or_type, preparation" (e.g. "penne pasta, cooked, semolina"). Max 8-10 words per string. No pronouns or full sentences.
+Output a JSON object with a "refined" array of {n_refine} strings in the SAME ORDER. For each item: combine the original ingredient with keywords from the user's answer, using terms that appear in USDA/OpenFoodFacts (e.g. cooked, raw, boiled, grilled, sautéed, semolina, bell, fresh). Each output string should look like a database-style name: "original, state_or_type, preparation" (e.g. "penne pasta, cooked, semolina"). Max 8-10 words per string. No pronouns or full sentences.
 
 Example format: {{"refined": ["phrase1", "phrase2", ...]}}
 
@@ -392,15 +399,20 @@ Respond with ONLY valid JSON: {{"refined": [...]}}"""
             text = text.split("```", 1)[-1].rsplit("```", 1)[0].strip()
         result = json.loads(text)
         refined_list = result.get("refined") or []
-        if isinstance(refined_list, list) and len(refined_list) == len(ingredients_with_answers):
-            out = [str(s).strip()[:120] for s in refined_list]
-            if all(out):
-                logger.info("clarification_questions: batch refined %d ingredients in one LLM call", len(out))
+        if isinstance(refined_list, list) and len(refined_list) == n_refine:
+            refined_strs = [str(s).strip()[:120] for s in refined_list]
+            if all(refined_strs):
+                # Stitch back: use refined for indices that had answers, original for blank
+                out = [(orig or "").strip() for orig, _ in ingredients_with_answers]
+                for idx, refined in zip(indices_with_answers, refined_strs):
+                    if idx < len(out):
+                        out[idx] = refined
+                logger.info("clarification_questions: batch refined %d ingredients in one LLM call", n_refine)
                 return out
     except (json.JSONDecodeError, KeyError, TypeError, ValueError, RuntimeError):
         pass
 
-    # Fallback: refine each separately (heuristic or single-item LLM)
+    # Fallback: refine each separately (heuristic or single-item LLM); blank answers stay as original
     return [
         refine_ingredient_from_clarification(orig, (ans or "").strip(), dish_name, api_key=key)
         for orig, ans in ingredients_with_answers

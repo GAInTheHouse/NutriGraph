@@ -787,7 +787,7 @@ def _render_clarification_section(client: NutriGraphClient) -> None:
 
         if stopped_max_rounds:
             st.success(
-                "✅ Reached the limit of follow-up questions (no improvement after 2 rounds for remaining ingredients). "
+                f"✅ Reached the limit of follow-up questions (no improvement after {_MAX_NO_IMPROVEMENT_ROUNDS} rounds for remaining ingredients). "
                 "Here is our best estimate from the matches we have."
             )
         else:
@@ -886,7 +886,7 @@ def _render_clarification_section(client: NutriGraphClient) -> None:
             st.caption(q)
             st.text_input(
                 "Your answer",
-                placeholder=f"e.g. boiled, semolina, no sauce",
+                placeholder=f"e.g. boiled, semolina — for {placeholder_ing}",
                 key=f"clar_answer_{target_idx}",
                 label_visibility="collapsed",
             )
@@ -936,9 +936,12 @@ def _render_clarification_section(client: NutriGraphClient) -> None:
                 if idx in st.session_state.clar_fallback_queries:
                     st.session_state.clar_query_names[idx] = st.session_state.clar_fallback_queries[idx]
 
-            # Update per-ingredient no-improvement count: stop asking after 2 rounds with negligible improvement.
+            # Update per-ingredient no-improvement count only for ingredients the user actually answered.
+            # Blank answers are skipped so we don't stop asking after 2 rounds without the user ever providing info.
             no_improvement = st.session_state.get("clar_no_improvement_count") or {}
             for i, target_idx in enumerate(answer_keys):
+                if i >= len(answers) or not answers[i]:
+                    continue
                 sb = scores_before[target_idx] if target_idx < len(scores_before) else 0.0
                 sa = scores_after[target_idx] if target_idx < len(scores_after) else 0.0
                 delta = sa - sb

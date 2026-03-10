@@ -202,7 +202,7 @@ def _retrieve_for_query(
         meta = metadatas[m_idx] if m_idx < len(metadatas) else {}
         meta = meta or {}
         name = str(meta.get("name", ""))
-        score = _combined_match_score(distance, query_text, name)
+        score = _combined_match_score(distance, query_expanded, name)
         best_score = max(best_score, score)
         ing_matches.append(
             RetrievalMatch(
