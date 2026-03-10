@@ -76,6 +76,7 @@ def generate_clarification_questions(
     scores: List[float],
     best_matches: List[str],
     *,
+    threshold: float = 0.50,
     api_key: Union[str, None] = None,
 ) -> List[str]:
     """
@@ -87,6 +88,7 @@ def generate_clarification_questions(
         low_conf_ingredients: Ingredient strings whose retrieval score is below threshold.
         scores: The combined match score for each low-confidence ingredient (0-1).
         best_matches: The top ChromaDB match name for each low-confidence ingredient.
+        threshold: Score threshold below which ingredients are considered low-confidence (must match graph).
         api_key: Vertex AI API Key. Falls back to VERTEXAI_API_KEY env var.
 
     Returns:
@@ -137,7 +139,7 @@ GOAL: Your question should elicit information that will improve the vector/lexic
 
 Dish: "{dish_name}"
 
-Low-confidence ingredients (score < 0.7) and their current best DB match:
+Low-confidence ingredients (score < {threshold}) and their current best DB match:
 {context_str}
 
 For EACH ingredient above, write ONE short question tailored to that ingredient and its current best match. The question should:

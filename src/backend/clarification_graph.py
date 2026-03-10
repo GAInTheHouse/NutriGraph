@@ -362,6 +362,7 @@ def ask_node(state: ClarificationState) -> ClarificationState:
             low_conf_ingredients=low_conf,
             scores=low_conf_scores,
             best_matches=best_matches,
+            threshold=state.get("threshold", DEFAULT_THRESHOLD),
         )
         logger.info("clarification_graph ask_node: got %d questions", len(questions))
     except Exception as e:
