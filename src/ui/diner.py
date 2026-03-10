@@ -379,28 +379,49 @@ def _render_restaurant_tagging(client: NutriGraphClient) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _render_analysis_detail_section(client: NutriGraphClient) -> None:
-    """One-shot Dish Detail View rendered right after the image is analysed."""
+    """
+    Single Dish Detail View — shows the current best estimate.
+
+    When the clarification agent is active and has run, we display the graph's
+    retrieval-based macros and confidence (updated after every round). Otherwise
+    we show the one-shot image analysis result.
+    """
     if not st.session_state.get("current_dish_analysis"):
         st.subheader("📊 Dish Detail View")
         st.info("Nutritional details will appear here after you analyze a dish photo.")
         return
 
-    analysis = DishAnalysisResponse(**st.session_state.current_dish_analysis)
+    # Use clarification graph data when available (single source of truth for
+    # macros and confidence); otherwise use one-shot analysis.
+    clar_active = st.session_state.get("clar_active", False)
+    clar_refined = st.session_state.get("clar_refined_result")
+    clar_state = st.session_state.get("clar_state")
 
-    # ── Cache / data-source badge ──────────────────────────────────────────────
-    data_source = analysis.data_source
-    if data_source == "restaurant_verified":
-        st.info(
-            "✅ **Verified by Restaurant** — these macros were published by the restaurant "
-            "owner and are served directly from our database. No AI estimation was performed."
+    if clar_active and (clar_refined or clar_state):
+        analysis = DishAnalysisResponse(**clar_refined) if clar_refined else _build_refined_result(
+            st.session_state.get("clar_original_names", []),
+            clar_state or {},
         )
-    elif data_source == "diner_cached":
-        st.info(
-            "🔄 **Enhanced by Past Diner Data** — previous analyses of this dish were used "
-            "to coach the AI for greater consistency. The image is still the primary source."
-        )
+        label = "Dish Detail View"
+    else:
+        analysis = DishAnalysisResponse(**st.session_state.current_dish_analysis)
+        label = "Dish Detail View"
 
-    render_dish_detail(analysis, label="Dish Detail View (one-shot estimate)")
+    # ── Cache / data-source badge (only for one-shot; graph data is always retrieval-based) ──
+    if not (clar_active and (clar_refined or clar_state)):
+        data_source = analysis.data_source
+        if data_source == "restaurant_verified":
+            st.info(
+                "✅ **Verified by Restaurant** — these macros were published by the restaurant "
+                "owner and are served directly from our database. No AI estimation was performed."
+            )
+        elif data_source == "diner_cached":
+            st.info(
+                "🔄 **Enhanced by Past Diner Data** — previous analyses of this dish were used "
+                "to coach the AI for greater consistency. The image is still the primary source."
+            )
+
+    render_dish_detail(analysis, label=label)
 
     # ── Save Results button (enabled as soon as macros are populated) ──────────
     col_save, col_clear = st.columns([2, 1])
@@ -409,8 +430,6 @@ def _render_analysis_detail_section(client: NutriGraphClient) -> None:
         if already_saved:
             st.success("✅ Saved to your history!")
         elif not analysis.is_cached:
-            # Only offer to save AI-generated results (cached restaurant results
-            # are already in the DB as the authoritative source).
             if st.button(
                 "💾 Save Results",
                 key="save_oneshot_results",
@@ -530,15 +549,18 @@ def _run_clarification_graph() -> None:
         if not st.session_state.get("clar_initial_scores"):
             st.session_state.clar_initial_scores = list(result.get("scores", []))
 
+        # Always build refined result from graph state so the main dish detail
+        # view can show the latest macros and confidence after every round.
+        refined = _build_refined_result(
+            st.session_state.clar_original_names, result
+        )
+        st.session_state.clar_refined_result = refined.model_dump()
+
         # Treat as converged only when the graph EXPLICITLY returned an empty
         # low_conf_indices list — a missing key means something went wrong.
         low_conf = result.get("low_conf_indices")
         if low_conf is not None and len(low_conf) == 0:
             st.session_state.clar_done = True
-            refined = _build_refined_result(
-                st.session_state.clar_original_names, result
-            )
-            st.session_state.clar_refined_result = refined.model_dump()
         elif low_conf is None:
             # Graph ran but decision node never set low_conf_indices — unexpected state.
             st.session_state.clar_error = (
@@ -777,25 +799,24 @@ def _render_clarification_section(client: NutriGraphClient) -> None:
                     unsafe_allow_html=True,
                 )
 
-    # ── Step 3: converged — summary metrics + refined result ─────────────────
+    # ── Step 3: converged — success message + actions (dish detail is in main view above) ─
     if st.session_state.get("clar_done"):
-        final_scores: list[float] = clar_state.get("scores", []) if clar_state else []
-        final_avg = sum(final_scores) / len(final_scores) if final_scores else 0.0
-        init_avg = sum(initial_scores) / len(initial_scores) if initial_scores else final_avg
-        rounds = len(history)
         stopped_max_rounds = st.session_state.get("clar_stopped_max_rounds", False)
 
         if stopped_max_rounds:
             st.success(
-                f"✅ Reached the limit of follow-up questions (no improvement after {_MAX_NO_IMPROVEMENT_ROUNDS} rounds for remaining ingredients). "
-                "Here is our best estimate from the matches we have."
+                "✅ No more follow-up questions needed. Here's our best estimate based on the matches we have."
             )
         else:
             st.success(
                 f"✅ All ingredients now meet the **{threshold:.0%}** confidence threshold!"
             )
 
-        # Journey summary
+        # Journey summary (optional context; main macros/confidence are in Dish Detail View above)
+        final_scores: list[float] = clar_state.get("scores", []) if clar_state else []
+        final_avg = sum(final_scores) / len(final_scores) if final_scores else 0.0
+        init_avg = sum(initial_scores) / len(initial_scores) if initial_scores else final_avg
+        rounds = len(history)
         j1, j2, j3 = st.columns(3)
         with j1:
             st.metric("Initial confidence", f"{init_avg:.1%}")
@@ -809,24 +830,19 @@ def _render_clarification_section(client: NutriGraphClient) -> None:
         with j3:
             st.metric("Clarification rounds", str(rounds))
 
+        # Save button — saves the refined result shown in the main Dish Detail View above
         refined_data = st.session_state.get("clar_refined_result")
         if refined_data:
             refined = DishAnalysisResponse(**refined_data)
-            render_dish_detail(
-                refined,
-                label="Agent-refined Nutritional Estimate (after clarifications)",
-            )
-
-            # ── Save Refined Results button ────────────────────────────────────
             already_saved = st.session_state.get("dish_saved", False)
             if already_saved:
                 st.success("✅ Saved to your history!")
             else:
                 if st.button(
-                    "💾 Save Refined Results",
+                    "💾 Save Results",
                     key="save_refined_results",
                     type="primary",
-                    help="Save the agent-refined estimate — this supersedes any earlier save.",
+                    help="Save this nutritional estimate to your history.",
                     use_container_width=True,
                 ):
                     _save_analysis(client, refined)

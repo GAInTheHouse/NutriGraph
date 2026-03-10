@@ -419,7 +419,7 @@ def build_clarification_graph(default_threshold: float = DEFAULT_THRESHOLD):
         result = graph.invoke({
             "ingredients": ["chicken breast", "mystery sauce"],
             "dish_name": "Chicken Caesar Salad",
-            "threshold": 0.7
+            "threshold": 0.5
         })
 
     The `result` will contain:
