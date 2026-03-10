@@ -71,7 +71,7 @@ class FeedbackSubmission(BaseModel):
 class AnalyzedIngredient(BaseModel):
     """A single ingredient identified and analyzed from a dish photo."""
     name: str = Field(..., description="Name of the identified ingredient")
-    confidence_score: float = Field(..., ge=0, le=1, description="Model confidence (0–1)")
+    confidence_score: float = Field(..., ge=0, le=1, description="Model confidence (0-1)")
     calories: float = Field(..., ge=0, description="Calories contributed by this ingredient (kcal)")
     protein: float = Field(..., ge=0, description="Protein in grams")
     carbs: float = Field(..., ge=0, description="Carbohydrates in grams")
@@ -107,9 +107,9 @@ class MessageType(str, Enum):
     Enum for the type of a single agent/user turn in the conversation.
 
     Values:
-        question    – the agent is asking the user to clarify something.
-        answer      – the user's response to an agent question.
-        final_result – the agent has converged on a nutrition estimate.
+        question    - the agent is asking the user to clarify something.
+        answer      - the user's response to an agent question.
+        final_result - the agent has converged on a nutrition estimate.
     """
 
     question = "question"
