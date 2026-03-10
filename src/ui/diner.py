@@ -33,9 +33,9 @@ from .components import (
     render_ingredients_table,
 )
 
-# ── Threshold mirrored from clarification_graph.py (imported lazily to avoid
-#    loading heavy ML dependencies at Streamlit startup time).
-_CONFIDENCE_THRESHOLD: float = 0.7
+# ── Threshold must match clarification_graph.DEFAULT_THRESHOLD; synced at runtime
+#    when the graph runs (lazy import avoids loading ML deps at Streamlit startup).
+_CONFIDENCE_THRESHOLD: float = 0.50
 
 # ── Clarification: stop asking after N rounds with no/small improvement ─────
 # Improvement below this is considered negligible (e.g. 1%).

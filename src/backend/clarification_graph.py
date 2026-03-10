@@ -178,21 +178,13 @@ def _expand_query_synonyms(query: str) -> str:
     return f"{query}, {', '.join(added)}"
 
 
-def _retrieve_for_query(
-    query_text: str,
-    collection,
-    model,
-    n_results: int = RETRIEVAL_TOP_K,
+def _result_row_to_matches(
+    ids: list,
+    dists: list,
+    metadatas: list,
+    query_expanded: str,
 ) -> tuple[List[RetrievalMatch], float]:
-    """Run retrieval for a single query; return matches and best score."""
-    # Expand with cooking synonyms so we match DB terms like "cooked" when user said "boiled"
-    query_expanded = _expand_query_synonyms(query_text)
-    emb = model.encode([query_expanded], show_progress_bar=False).tolist()
-    result = collection.query(query_embeddings=emb, n_results=n_results)
-    ids = result.get("ids", [[]])[0]
-    dists = result.get("distances", [[]])[0]
-    metadatas = result.get("metadatas", [[]])[0]
-
+    """Turn a single query's result row (ids, dists, metadatas) into sorted matches and best score."""
     ing_matches: List[RetrievalMatch] = []
     best_score = 0.0
     for m_idx, mid in enumerate(ids):
@@ -222,14 +214,30 @@ def _retrieve_for_query(
     return ing_matches, best_score
 
 
+def _retrieve_for_query(
+    query_text: str,
+    collection,
+    model,
+    n_results: int = RETRIEVAL_TOP_K,
+) -> tuple[List[RetrievalMatch], float]:
+    """Run retrieval for a single query; return matches and best score. Used by tests."""
+    query_expanded = _expand_query_synonyms(query_text)
+    emb = model.encode([query_expanded], show_progress_bar=False).tolist()
+    result = collection.query(query_embeddings=emb, n_results=n_results)
+    ids = result.get("ids", [[]])[0]
+    dists = result.get("distances", [[]])[0]
+    metadatas = result.get("metadatas", [[]])[0]
+    return _result_row_to_matches(ids, dists, metadatas, query_expanded)
+
+
 def retrieve_node(state: ClarificationState) -> ClarificationState:
     """
     Node: run vector retrieval for each ingredient and populate `matches` + `scores`.
 
     When fallback_queries is provided for an index (after user refinement), we
     run retrieval for BOTH the refined query and the original query, then keep
-    the best match. This prevents confidence from dropping when refinement
-    produces a noisier embedding.
+    the best match. Batches all queries into a single encode() + collection.query()
+    to avoid N (or 2N) round-trips as ingredient count grows.
     """
     collection = _get_collection()
     model = _get_embedding_model()
@@ -246,38 +254,57 @@ def retrieve_node(state: ClarificationState) -> ClarificationState:
         state["used_fallback_indices"] = []
         return state
 
+    # Build batch: (ingredient_idx, expanded_query_str, is_fallback)
+    batch: List[tuple] = []
+    for idx, query_text in enumerate(ingredients):
+        query_expanded = _expand_query_synonyms(query_text)
+        batch.append((idx, query_expanded, False))
+        fallback = fallback_queries.get(idx) if isinstance(fallback_queries, dict) else None
+        if fallback and fallback.strip() != query_text:
+            batch.append((idx, _expand_query_synonyms(fallback.strip()), True))
+
+    query_strings = [q for _, q, _ in batch]
+    embeddings = model.encode(query_strings, show_progress_bar=False).tolist()
+    result = collection.query(query_embeddings=embeddings, n_results=RETRIEVAL_TOP_K)
+
+    # Per-ingredient: list of (matches, score, is_fallback) so we can pick best
+    by_idx: Dict[int, List[tuple]] = {}
+    for b_idx, (idx, query_expanded, is_fallback) in enumerate(batch):
+        ids = result.get("ids", [[]])[b_idx] if b_idx < len(result.get("ids", [])) else []
+        dists = result.get("distances", [[]])[b_idx] if b_idx < len(result.get("distances", [])) else []
+        metadatas = result.get("metadatas", [[]])[b_idx] if b_idx < len(result.get("metadatas", [])) else []
+        matches, score = _result_row_to_matches(ids, dists, metadatas, query_expanded)
+        by_idx.setdefault(idx, []).append((matches, score, is_fallback))
+
     all_matches: List[List[RetrievalMatch]] = []
     scores: List[float] = []
     used_fallback_indices: List[int] = []
-
-    for idx, query_text in enumerate(ingredients):
-        fallback = fallback_queries.get(idx) if isinstance(fallback_queries, dict) else None
-
-        if fallback and fallback.strip() != query_text:
-            # Multi-query: try both refined and original, keep best
-            matches_a, score_a = _retrieve_for_query(query_text, collection, model)
-            matches_b, score_b = _retrieve_for_query(fallback.strip(), collection, model)
-            if score_b > score_a:
+    for idx in range(len(ingredients)):
+        candidates = by_idx.get(idx, [])
+        # Pick best by score; when tied, prefer refined (is_fallback=False)
+        best = max(candidates, key=lambda c: (c[1], not c[2])) if candidates else ([], 0.0, False)
+        matches_best, score_best, used_fallback = best
+        if len(candidates) == 2:
+            # Batch order: refined first (is_fallback=False), then fallback (True)
+            refined_score = next(c[1] for c in candidates if not c[2])
+            fallback_score = next(c[1] for c in candidates if c[2])
+            query_text = ingredients[idx]
+            fallback = (fallback_queries.get(idx) or "").strip()
+            if used_fallback:
+                used_fallback_indices.append(idx)
                 logger.info(
                     "clarification_graph: multi-query idx=%s refined_score=%.3f fallback_score=%.3f -> using FALLBACK (better). "
                     "refined_query=%r fallback_query=%r",
-                    idx, score_a, score_b, query_text, fallback.strip(),
+                    idx, refined_score, fallback_score, query_text, fallback,
                 )
-                all_matches.append(matches_b)
-                scores.append(score_b)
-                used_fallback_indices.append(idx)
             else:
                 logger.info(
                     "clarification_graph: multi-query idx=%s refined_score=%.3f fallback_score=%.3f -> using REFINED. "
                     "refined_query=%r fallback_query=%r",
-                    idx, score_a, score_b, query_text, fallback.strip(),
+                    idx, refined_score, fallback_score, query_text, fallback,
                 )
-                all_matches.append(matches_a)
-                scores.append(score_a)
-        else:
-            matches, best_score = _retrieve_for_query(query_text, collection, model)
-            all_matches.append(matches)
-            scores.append(best_score)
+        all_matches.append(matches_best)
+        scores.append(score_best)
 
     state["matches"] = all_matches
     state["scores"] = scores
