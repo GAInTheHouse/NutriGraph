@@ -10,12 +10,14 @@ This module handles the consumer-facing interface for:
     DEFAULT_THRESHOLD defined in src/backend/clarification_graph.py
   - Displaying the refined final estimate once all ingredients converge (Step 3)
   - Searching dishes by name (legacy text-based flow, kept for compatibility)
-  - Personalised daily tracking (placeholder)
+  - Personalised daily tracking (backed by diner history)
   - Submitting accuracy feedback
 """
-import streamlit as st
-from datetime import date
+import json
+from datetime import date, datetime
+from pathlib import Path
 
+import streamlit as st
 import pandas as pd
 
 from ..core.models import (
@@ -32,6 +34,10 @@ from .components import (
     render_confidence_indicator,
     render_ingredients_table,
 )
+
+# Single-user diner history is persisted to a JSON file under data/.
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_DINER_HISTORY_PATH = _PROJECT_ROOT / "data" / "diner_history.json"
 
 # ── Threshold must match clarification_graph.DEFAULT_THRESHOLD; synced at runtime
 #    when the graph runs (lazy import avoids loading ML deps at Streamlit startup).
@@ -148,6 +154,83 @@ def _init_session_state() -> None:
     st.session_state.setdefault("clar_no_improvement_count", {})
     # True when we stopped because no ingredients had questions left (max no-improvement rounds reached)
     st.session_state.setdefault("clar_stopped_max_rounds", False)
+    # True while the clarification agent is re-analysing after a user reply
+    st.session_state.setdefault("clar_busy", False)
+    # Pending clarification payload (answers + indices) to be processed while busy
+    st.session_state.setdefault("clar_pending", None)
+    # Local diner history cache (loaded on demand from JSON)
+    st.session_state.setdefault("diner_history_cache", None)
+
+
+def _load_diner_history() -> list[dict]:
+    """
+    Load the single-user diner history from the local JSON file.
+
+    This is intentionally frontend-only (no multi-user support) and assumes
+    a single user for this deployment. The data is used to power the legacy
+    search view and the personalised tracking section.
+    """
+    if st.session_state.get("diner_history_cache") is not None:
+        return st.session_state.diner_history_cache
+
+    if not _DINER_HISTORY_PATH.exists():
+        history: list[dict] = []
+    else:
+        try:
+            raw = _DINER_HISTORY_PATH.read_text(encoding="utf-8")
+            history = json.loads(raw) if raw.strip() else []
+        except Exception:
+            history = []
+
+    # Normalise structure a bit in case of manual edits.
+    norm: list[dict] = []
+    for item in history:
+        if not isinstance(item, dict):
+            continue
+        if "dish_name" not in item or "calories" not in item:
+            continue
+        norm.append(item)
+
+    st.session_state.diner_history_cache = norm
+    return norm
+
+
+def _append_diner_history_entry(analysis: DishAnalysisResponse) -> None:
+    """
+    Append a new entry to the local diner history JSON file.
+
+    Stores only dish-level aggregates and timestamp; per-ingredient details
+    remain in the backend DB.  This keeps the file small while still being
+    enough for search + daily tracking.
+    """
+    history = _load_diner_history()
+
+    # Resolve a human-readable restaurant label from session state.
+    restaurant_label: str | None = None
+    selected_restaurant = st.session_state.get("selected_restaurant")
+    if isinstance(selected_restaurant, dict):
+        restaurant_label = selected_restaurant.get("name") or None
+    elif selected_restaurant == "Home Cooked":
+        restaurant_label = "Home Cooked"
+
+    entry = {
+        "dish_name": analysis.dish_name,
+        "restaurant": restaurant_label,
+        "calories": float(analysis.total_calories),
+        "protein": float(analysis.total_protein),
+        "carbs": float(analysis.total_carbs),
+        "fat": float(analysis.total_fat),
+        "created_at": datetime.utcnow().isoformat(),
+    }
+    history.append(entry)
+
+    try:
+        _DINER_HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _DINER_HISTORY_PATH.write_text(json.dumps(history, indent=2), encoding="utf-8")
+        st.session_state.diner_history_cache = history
+    except Exception:
+        # History is a best-effort local feature; failures should not block saving.
+        pass
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -330,15 +413,16 @@ def _render_restaurant_tagging(client: NutriGraphClient) -> None:
         st.session_state.pop("diner_restaurant_selectbox", None)
 
     # Two-step Places search when not home cooked
+    st.markdown("**Search Restaurant Name**")
     rest_col1, rest_col2 = st.columns([3, 1])
     with rest_col1:
         rest_query = st.text_input(
             "Search Restaurant Name",
             placeholder="e.g., Shake Shack Manhattan",
             key="diner_restaurant_query",
+            label_visibility="collapsed",
         )
     with rest_col2:
-        st.write("")  # vertical alignment nudge
         find_clicked = st.button(
             "Find Restaurant",
             key="diner_find_restaurant",
@@ -449,10 +533,14 @@ def _render_analysis_detail_section(client: NutriGraphClient) -> None:
 
 
 def _save_analysis(client: NutriGraphClient, analysis: DishAnalysisResponse) -> None:
-    """Helper: call the save endpoint and update session state."""
+    """Helper: call the save endpoint, store local history, and update session state."""
     place_id = st.session_state.get("current_place_id")
     try:
         client.save_dish_result(analysis, place_id=place_id)
+        # Also persist a lightweight, single-user history record locally so the
+        # legacy search + tracking views can surface past meals even when the
+        # backend DB is reset.
+        _append_diner_history_entry(analysis)
         st.session_state.dish_saved = True
         st.rerun()
     except NutriGraphAPIError as exc:
@@ -579,6 +667,80 @@ def _run_clarification_graph() -> None:
         )
 
 
+def _process_pending_clarification() -> None:
+    """
+    Heavy-weight post-answer processing run while ``clar_busy`` is True.
+
+    Uses the pending answers stored in ``clar_pending`` to refine ingredient
+    queries, re-run the clarification graph, update history and improvement
+    counters, and then clears the pending payload.
+    """
+    pending = st.session_state.get("clar_pending") or {}
+    answer_keys: list[int] = pending.get("answer_keys") or []
+    answers: list[str] = pending.get("answers") or []
+
+    clar_state: dict | None = st.session_state.get("clar_state") or {}
+    scores_before = list(clar_state.get("scores", []))
+
+    # One LLM call to get refined phrases for all (ingredient, answer) pairs
+    dish_name = st.session_state.get("clar_dish_name", "")
+    from ..ml.clarification_questions import refine_ingredients_batch
+
+    ingredients_with_answers = [
+        (st.session_state.clar_query_names[target_idx], answers[i])
+        for i, target_idx in enumerate(answer_keys)
+    ]
+
+    refined_list = refine_ingredients_batch(ingredients_with_answers, dish_name)
+
+    for i, target_idx in enumerate(answer_keys):
+        current_query = st.session_state.clar_query_names[target_idx]
+        st.session_state.clar_fallback_queries[target_idx] = current_query
+        st.session_state.clar_query_names[target_idx] = (
+            refined_list[i] if i < len(refined_list) else current_query
+        )
+
+    # Re-run the full clarification graph once with all updated queries
+    _run_clarification_graph()
+
+    new_state = st.session_state.get("clar_state") or {}
+    scores_after = list(new_state.get("scores", []))
+
+    # Keep the winning query for indices where fallback was better, so next round
+    # we don't drop below the best score we already had (overall confidence won't decrease).
+    used_fallback = new_state.get("used_fallback_indices") or []
+    for idx in used_fallback:
+        if idx in st.session_state.clar_fallback_queries:
+            st.session_state.clar_query_names[idx] = st.session_state.clar_fallback_queries[idx]
+
+    # Update per-ingredient no-improvement count only for ingredients the user actually answered.
+    no_improvement = st.session_state.get("clar_no_improvement_count") or {}
+    for i, target_idx in enumerate(answer_keys):
+        if i >= len(answers) or not answers[i]:
+            continue
+        sb = scores_before[target_idx] if target_idx < len(scores_before) else 0.0
+        sa = scores_after[target_idx] if target_idx < len(scores_after) else 0.0
+        delta = sa - sb
+        if delta < _NEGLIGIBLE_IMPROVEMENT:
+            no_improvement[target_idx] = no_improvement.get(target_idx, 0) + 1
+        else:
+            no_improvement[target_idx] = 0
+    st.session_state.clar_no_improvement_count = no_improvement
+
+    # Append conversation turn
+    st.session_state.clar_history.append(
+        {
+            "questions": pending.get("questions") or [],
+            "answers": [answers[i] if i < len(answers) else "" for i in range(len(answer_keys))],
+            "scores_before": scores_before,
+            "scores_after": scores_after,
+        }
+    )
+
+    # Clear pending payload
+    st.session_state.clar_pending = None
+
+
 def _build_refined_result(
     original_names: list[str],
     clar_state: dict,
@@ -664,6 +826,8 @@ def _reset_clarification() -> None:
         "clar_fallback_queries",
         "clar_no_improvement_count",
         "clar_stopped_max_rounds",
+        "clar_busy",
+        "clar_pending",
         # Persistence flags
         "dish_saved",
         "current_place_id",
@@ -705,6 +869,15 @@ def _render_clarification_section(client: NutriGraphClient) -> None:
             "The one-shot estimate above is still valid. "
             "Agent clarification requires the ChromaDB ingredient index to be built."
         )
+        return
+
+    # If the agent is currently re-running after a user reply, process the
+    # pending answers once and show only a spinner while doing so.
+    if st.session_state.get("clar_busy"):
+        with st.spinner("Re-analysing all ingredients…"):
+            _process_pending_clarification()
+        st.session_state.clar_busy = False
+        st.rerun()
         return
 
     threshold = _CONFIDENCE_THRESHOLD
@@ -769,35 +942,37 @@ def _render_clarification_section(client: NutriGraphClient) -> None:
     history: list[dict] = st.session_state.get("clar_history", [])
     if history:
         st.markdown("#### Conversation")
-        for turn in history:
-            # Support both single Q&A and batch (multiple questions/answers per turn)
-            q_list = turn.get("questions") if isinstance(turn.get("questions"), list) else ([turn["question"]] if turn.get("question") else [])
-            a_list = turn.get("answers") if isinstance(turn.get("answers"), list) else ([turn["answer"]] if turn.get("answer") else [])
-            for q, a in zip(q_list, a_list):
-                with st.chat_message("assistant"):
-                    st.markdown(q)
-                with st.chat_message("user"):
-                    st.markdown(a)
-            # Show the confidence shift produced by this answer
-            sb: list[float] = turn.get("scores_before", [])
-            sa: list[float] = turn.get("scores_after", [])
-            if sb and sa:
-                avg_b = sum(sb) / len(sb)
-                avg_a = sum(sa) / len(sa)
-                diff = avg_a - avg_b
-                arrow = "📈" if diff > 0.001 else ("📉" if diff < -0.001 else "➡️")
-                color = "green" if diff > 0.001 else ("red" if diff < -0.001 else "gray")
-                status = ""
-                if diff < -0.001:
-                    status = " ⚠️ <b>DROPPED</b>"
-                elif diff > 0.001:
-                    status = " ✓ improved"
-                st.markdown(
-                    f"<p style='color:{color};font-size:0.82em;margin:2px 0 8px 0'>"
-                    f"{arrow}&nbsp;Overall confidence after this answer: "
-                    f"<b>{avg_b:.1%} → {avg_a:.1%}</b> ({diff:+.1%}){status}</p>",
-                    unsafe_allow_html=True,
-                )
+
+        # Show all completed rounds inside a collapsible container so only the
+        # current question + answer form remain visible on the main view.
+        with st.expander("Previous rounds", expanded=False):
+            for turn in history:
+                q_list = turn.get("questions") if isinstance(turn.get("questions"), list) else ([turn["question"]] if turn.get("question") else [])
+                a_list = turn.get("answers") if isinstance(turn.get("answers"), list) else ([turn["answer"]] if turn.get("answer") else [])
+                for q, a in zip(q_list, a_list):
+                    with st.chat_message("assistant"):
+                        st.markdown(q)
+                    with st.chat_message("user"):
+                        st.markdown(a)
+                sb: list[float] = turn.get("scores_before", [])
+                sa: list[float] = turn.get("scores_after", [])
+                if sb and sa:
+                    avg_b = sum(sb) / len(sb)
+                    avg_a = sum(sa) / len(sa)
+                    diff = avg_a - avg_b
+                    arrow = "📈" if diff > 0.001 else ("📉" if diff < -0.001 else "➡️")
+                    color = "green" if diff > 0.001 else ("red" if diff < -0.001 else "gray")
+                    status = ""
+                    if diff < -0.001:
+                        status = " ⚠️ <b>DROPPED</b>"
+                    elif diff > 0.001:
+                        status = " ✓ improved"
+                    st.markdown(
+                        f"<p style='color:{color};font-size:0.82em;margin:2px 0 8px 0'>"
+                        f"{arrow}&nbsp;Overall confidence after this answer: "
+                        f"<b>{avg_b:.1%} → {avg_a:.1%}</b> ({diff:+.1%}){status}</p>",
+                        unsafe_allow_html=True,
+                    )
 
     # ── Step 3: converged — success message + actions (dish detail is in main view above) ─
     if st.session_state.get("clar_done"):
@@ -902,7 +1077,7 @@ def _render_clarification_section(client: NutriGraphClient) -> None:
             st.caption(q)
             st.text_input(
                 "Your answer",
-                placeholder=f"e.g. boiled, semolina — for {placeholder_ing}",
+                placeholder="Your answer here",
                 key=f"clar_answer_{target_idx}",
                 label_visibility="collapsed",
             )
@@ -920,61 +1095,15 @@ def _render_clarification_section(client: NutriGraphClient) -> None:
         if not any(answers):
             st.warning("Please fill in at least one answer.")
         else:
-            # Capture scores BEFORE re-running
-            scores_before = list(clar_state.get("scores", []))
-
-            # One LLM call to get refined phrases for all (ingredient, answer) pairs
-            dish_name = st.session_state.get("clar_dish_name", "")
-            from ..ml.clarification_questions import refine_ingredients_batch
-
-            ingredients_with_answers = [
-                (st.session_state.clar_query_names[target_idx], answers[i])
-                for i, target_idx in enumerate(answer_keys)
-            ]
-            refined_list = refine_ingredients_batch(ingredients_with_answers, dish_name)
-
-            for i, target_idx in enumerate(answer_keys):
-                current_query = st.session_state.clar_query_names[target_idx]
-                st.session_state.clar_fallback_queries[target_idx] = current_query
-                st.session_state.clar_query_names[target_idx] = refined_list[i] if i < len(refined_list) else current_query
-
-            # Re-run the full clarification graph once with all updated queries
-            with st.spinner("Re-analysing all ingredients…"):
-                _run_clarification_graph()
-
-            new_state = st.session_state.get("clar_state") or {}
-            scores_after = list(new_state.get("scores", []))
-
-            # Keep the winning query for indices where fallback was better, so next round
-            # we don't drop below the best score we already had (overall confidence won't decrease).
-            used_fallback = new_state.get("used_fallback_indices") or []
-            for idx in used_fallback:
-                if idx in st.session_state.clar_fallback_queries:
-                    st.session_state.clar_query_names[idx] = st.session_state.clar_fallback_queries[idx]
-
-            # Update per-ingredient no-improvement count only for ingredients the user actually answered.
-            # Blank answers are skipped so we don't stop asking after 2 rounds without the user ever providing info.
-            no_improvement = st.session_state.get("clar_no_improvement_count") or {}
-            for i, target_idx in enumerate(answer_keys):
-                if i >= len(answers) or not answers[i]:
-                    continue
-                sb = scores_before[target_idx] if target_idx < len(scores_before) else 0.0
-                sa = scores_after[target_idx] if target_idx < len(scores_after) else 0.0
-                delta = sa - sb
-                if delta < _NEGLIGIBLE_IMPROVEMENT:
-                    no_improvement[target_idx] = no_improvement.get(target_idx, 0) + 1
-                else:
-                    no_improvement[target_idx] = 0
-            st.session_state.clar_no_improvement_count = no_improvement
-
-            st.session_state.clar_history.append(
-                {
-                    "questions": filtered_questions,
-                    "answers": [answers[i] if i < len(answers) else "" for i in range(len(filtered_questions))],
-                    "scores_before": scores_before,
-                    "scores_after": scores_after,
-                }
-            )
+            # Store a lightweight snapshot of what needs processing, then mark
+            # the agent as busy and trigger a rerun. The heavy work runs in
+            # _process_pending_clarification on the next render.
+            st.session_state.clar_pending = {
+                "answer_keys": answer_keys,
+                "answers": answers,
+                "questions": filtered_questions,
+            }
+            st.session_state.clar_busy = True
             st.rerun()
 
 
@@ -1013,7 +1142,7 @@ def _render_feedback_section() -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _render_dish_search_section(client: NutriGraphClient) -> None:
-    """Text-based dish search using the mock/RAG estimation pipeline."""
+    """Text-based dish search and quick logging view."""
     st.subheader("🔍 Dish Search / Log")
 
     col1, col2 = st.columns([2, 1])
@@ -1051,6 +1180,48 @@ def _render_dish_search_section(client: NutriGraphClient) -> None:
 
         st.success(f"Nutrition estimated for **{dish_name}**!")
 
+    # ── Saved entries from photo uploads (single-user history) ───────────────
+    st.markdown("#### Saved from your dish photos")
+    history = _load_diner_history()
+
+    # Simple name-based filter: when a dish name is typed, prefer matches.
+    filtered = history
+    if dish_name:
+        needle = dish_name.lower().strip()
+        filtered = [
+            h for h in history
+            if needle in (h.get("dish_name", "") or "").lower()
+        ]
+
+    if not filtered:
+        st.caption(
+            "When you upload a dish photo and tap **Save Results**, "
+            "those meals will appear here for quick lookup."
+        )
+        return
+
+    # Show most recent first.
+    filtered = sorted(
+        filtered,
+        key=lambda h: h.get("created_at", ""),
+        reverse=True,
+    )
+
+    df = pd.DataFrame(
+        [
+            {
+                "Dish": h.get("dish_name", ""),
+                "Where": h.get("restaurant") or "",
+                "Calories": round(float(h.get("calories", 0.0)), 1),
+                "Protein (g)": round(float(h.get("protein", 0.0)), 1),
+                "Carbs (g)": round(float(h.get("carbs", 0.0)), 1),
+                "Fat (g)": round(float(h.get("fat", 0.0)), 1),
+            }
+            for h in filtered
+        ]
+    )
+    st.dataframe(df, width='stretch', hide_index=True)
+
 
 def _render_dish_detail_section() -> None:
     """Detail view for the legacy text-search result stored in session state."""
@@ -1082,25 +1253,55 @@ def _render_dish_detail_section() -> None:
 
 
 def _render_tracking_section() -> None:
-    """Personalised daily tracking placeholder."""
+    """Personalised daily tracking backed by single-user history."""
     st.subheader("📈 Personalised Tracking")
 
     col1, col2 = st.columns([1, 2])
     with col1:
-        st.date_input("Select date", value=date.today(), key="tracking_date")
+        selected_date = st.date_input("Select date", value=date.today(), key="tracking_date")
     with col2:
-        st.markdown("#### Daily Totals (Mock)")
+        history = _load_diner_history()
+        st.markdown("#### Daily Totals")
+
+        if not history:
+            st.caption("No saved dishes yet. Save a dish analysis to see it here.")
+            return
+
+        # Filter history to the selected calendar date.
+        day_str = selected_date.isoformat()
+        day_entries: list[dict] = []
+        for h in history:
+            ts = h.get("created_at")
+            if not isinstance(ts, str):
+                continue
+            try:
+                dt = datetime.fromisoformat(ts)
+            except Exception:
+                continue
+            if dt.date().isoformat() == day_str:
+                day_entries.append(h)
+
+        # If there are no meals for the selected date, fall back to totals
+        # across the entire history so the widget is always populated once
+        # the user has at least one saved dish.
+        if day_entries:
+            totals_source = day_entries
+        else:
+            totals_source = history
+
+        total_cal = sum(float(h.get("calories", 0.0)) for h in totals_source)
+        total_pro = sum(float(h.get("protein", 0.0)) for h in totals_source)
+        total_carbs = sum(float(h.get("carbs", 0.0)) for h in totals_source)
+        total_fat = sum(float(h.get("fat", 0.0)) for h in totals_source)
+
         daily_cols = st.columns(4)
         with daily_cols[0]:
-            st.metric("Calories", "1,847")
+            st.metric("Calories", f"{total_cal:.0f}")
         with daily_cols[1]:
-            st.metric("Protein", "89g")
+            st.metric("Protein", f"{total_pro:.1f} g")
         with daily_cols[2]:
-            st.metric("Carbs", "204g")
+            st.metric("Carbs", f"{total_carbs:.1f} g")
         with daily_cols[3]:
-            st.metric("Fat", "72g")
+            st.metric("Fat", f"{total_fat:.1f} g")
 
-    st.info(
-        "📌 **Feature coming soon:** Full meal logging, daily/weekly trends, "
-        "and personalised nutrition goals."
-    )
+    # Logged dishes list is available in the Dish Search / Log section.
