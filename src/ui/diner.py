@@ -37,6 +37,12 @@ from .components import (
 #    loading heavy ML dependencies at Streamlit startup time).
 _CONFIDENCE_THRESHOLD: float = 0.7
 
+# ── Clarification: stop asking after N rounds with no/small improvement ─────
+# Improvement below this is considered negligible (e.g. 1%).
+_NEGLIGIBLE_IMPROVEMENT: float = 0.01
+# After this many follow-up rounds with negligible improvement for an ingredient, stop asking.
+_MAX_NO_IMPROVEMENT_ROUNDS: int = 2
+
 # ── Issue types offered in the feedback form ─────────────────────────────────
 _FEEDBACK_ISSUE_TYPES = [
     "Missing Ingredient",
@@ -116,6 +122,8 @@ def _init_session_state() -> None:
 
     # Clarification agent state
     st.session_state.setdefault("clar_active", False)
+    # Dish name from the image analysis (for LLM context when generating questions)
+    st.session_state.setdefault("clar_dish_name", "")
     # Original ingredient names extracted from the image (used for display)
     st.session_state.setdefault("clar_original_names", [])
     # Ingredient query strings sent to ChromaDB; may be enriched with user answers
@@ -134,6 +142,12 @@ def _init_session_state() -> None:
     st.session_state.setdefault("clar_initial_scores", [])
     # Per-ingredient scores from the previous graph run (for round-over-round delta)
     st.session_state.setdefault("clar_prev_scores", [])
+    # For multi-query retrieval: {idx: pre-refinement query} so we try both and keep best
+    st.session_state.setdefault("clar_fallback_queries", {})
+    # Per-ingredient count of rounds with no/small improvement; stop asking after _MAX_NO_IMPROVEMENT_ROUNDS
+    st.session_state.setdefault("clar_no_improvement_count", {})
+    # True when we stopped because no ingredients had questions left (max no-improvement rounds reached)
+    st.session_state.setdefault("clar_stopped_max_rounds", False)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -193,7 +207,7 @@ def render_dish_detail(result: DishAnalysisResponse, *, label: str = "Dish Detai
                 for ing in result.ingredients
             ]
         )
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        st.dataframe(df, width='stretch', hide_index=True)
     else:
         st.caption("No per-ingredient breakdown was returned by the model.")
 
@@ -216,7 +230,7 @@ def _render_image_analysis_section(client: NutriGraphClient) -> None:
     if uploaded_file is not None:
         col_img, _ = st.columns([1, 2])
         with col_img:
-            st.image(uploaded_file, caption=uploaded_file.name, use_container_width=True)
+            st.image(uploaded_file, caption=uploaded_file.name, width='stretch')
 
         # ── Restaurant tagging ─────────────────────────────────────────────────
         st.markdown("#### Where is this meal from?")
@@ -238,7 +252,7 @@ def _render_image_analysis_section(client: NutriGraphClient) -> None:
 
         st.write("")  # spacing before the action button
 
-        if st.button("🔍 Analyze Dish", type="primary", use_container_width=True):
+        if st.button("🔍 Analyze Dish", type="primary", width='stretch'):
             # Resolve the restaurant selection to a plain string and place_id.
             _selected = st.session_state.get("selected_restaurant")
             if isinstance(_selected, dict):
@@ -455,6 +469,7 @@ def _init_clarification(analysis: DishAnalysisResponse) -> None:
     # not bleed into the new session when a second image is analyzed without
     # clicking "Clear Analysis".
     st.session_state.clar_active = True
+    st.session_state.clar_dish_name = analysis.dish_name
     st.session_state.clar_original_names = names
     st.session_state.clar_query_names = list(names)   # mutable copy
     st.session_state.clar_history = []
@@ -464,6 +479,9 @@ def _init_clarification(analysis: DishAnalysisResponse) -> None:
     st.session_state.clar_state = None
     st.session_state.clar_initial_scores = []   # reset baseline for this dish
     st.session_state.clar_prev_scores = []      # reset round-over-round delta
+    st.session_state.clar_fallback_queries = {}  # multi-query retrieval
+    st.session_state.clar_no_improvement_count = {}
+    st.session_state.clar_stopped_max_rounds = False
     _run_clarification_graph()
 
 
@@ -499,7 +517,13 @@ def _run_clarification_graph() -> None:
         st.session_state.clar_prev_scores = list(existing.get("scores", []))
 
         graph = build_clarification_graph()
-        result: dict = graph.invoke({"ingredients": names})
+        dish_name = st.session_state.get("clar_dish_name", "")
+        fallback_queries = st.session_state.get("clar_fallback_queries", {})
+        result: dict = graph.invoke({
+            "ingredients": names,
+            "dish_name": dish_name,
+            "fallback_queries": fallback_queries,
+        })
         st.session_state.clar_state = result
 
         # Persist the very first set of scores as the baseline for total-improvement display.
@@ -605,6 +629,7 @@ def _reset_clarification() -> None:
     for key in (
         # Agent state
         "clar_active",
+        "clar_dish_name",
         "clar_original_names",
         "clar_query_names",
         "clar_state",
@@ -614,14 +639,19 @@ def _reset_clarification() -> None:
         "clar_error",
         "clar_initial_scores",
         "clar_prev_scores",
+        "clar_fallback_queries",
+        "clar_no_improvement_count",
+        "clar_stopped_max_rounds",
         # Persistence flags
         "dish_saved",
         "current_place_id",
         # Widget state — must be cleared to prevent Streamlit from prefilling
-        # the reply form with a value from the previous clarification session.
         "clar_user_answer_input",
     ):
         st.session_state.pop(key, None)
+    for key in list(st.session_state.keys()):
+        if key.startswith("clar_answer_"):
+            st.session_state.pop(key, None)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -718,10 +748,14 @@ def _render_clarification_section(client: NutriGraphClient) -> None:
     if history:
         st.markdown("#### Conversation")
         for turn in history:
-            with st.chat_message("assistant"):
-                st.markdown(turn["question"])
-            with st.chat_message("user"):
-                st.markdown(turn["answer"])
+            # Support both single Q&A and batch (multiple questions/answers per turn)
+            q_list = turn.get("questions") if isinstance(turn.get("questions"), list) else ([turn["question"]] if turn.get("question") else [])
+            a_list = turn.get("answers") if isinstance(turn.get("answers"), list) else ([turn["answer"]] if turn.get("answer") else [])
+            for q, a in zip(q_list, a_list):
+                with st.chat_message("assistant"):
+                    st.markdown(q)
+                with st.chat_message("user"):
+                    st.markdown(a)
             # Show the confidence shift produced by this answer
             sb: list[float] = turn.get("scores_before", [])
             sa: list[float] = turn.get("scores_after", [])
@@ -731,10 +765,15 @@ def _render_clarification_section(client: NutriGraphClient) -> None:
                 diff = avg_a - avg_b
                 arrow = "📈" if diff > 0.001 else ("📉" if diff < -0.001 else "➡️")
                 color = "green" if diff > 0.001 else ("red" if diff < -0.001 else "gray")
+                status = ""
+                if diff < -0.001:
+                    status = " ⚠️ <b>DROPPED</b>"
+                elif diff > 0.001:
+                    status = " ✓ improved"
                 st.markdown(
                     f"<p style='color:{color};font-size:0.82em;margin:2px 0 8px 0'>"
                     f"{arrow}&nbsp;Overall confidence after this answer: "
-                    f"<b>{avg_b:.1%} → {avg_a:.1%}</b> ({diff:+.1%})</p>",
+                    f"<b>{avg_b:.1%} → {avg_a:.1%}</b> ({diff:+.1%}){status}</p>",
                     unsafe_allow_html=True,
                 )
 
@@ -744,10 +783,17 @@ def _render_clarification_section(client: NutriGraphClient) -> None:
         final_avg = sum(final_scores) / len(final_scores) if final_scores else 0.0
         init_avg = sum(initial_scores) / len(initial_scores) if initial_scores else final_avg
         rounds = len(history)
+        stopped_max_rounds = st.session_state.get("clar_stopped_max_rounds", False)
 
-        st.success(
-            f"✅ All ingredients now meet the **{threshold:.0%}** confidence threshold!"
-        )
+        if stopped_max_rounds:
+            st.success(
+                "✅ Reached the limit of follow-up questions (no improvement after 2 rounds for remaining ingredients). "
+                "Here is our best estimate from the matches we have."
+            )
+        else:
+            st.success(
+                f"✅ All ingredients now meet the **{threshold:.0%}** confidence threshold!"
+            )
 
         # Journey summary
         j1, j2, j3 = st.columns(3)
@@ -808,52 +854,108 @@ def _render_clarification_section(client: NutriGraphClient) -> None:
         )
         return
 
-    # Always surface the FIRST pending question; the rest follow in subsequent reruns.
-    current_question = questions[0]
-    current_ingredient = low_conf_ingredients[0] if low_conf_ingredients else "ingredient"
-    target_idx = low_conf_indices[0] if low_conf_indices else 0
+    # Exclude ingredients that have had 2+ follow-up rounds with no/small improvement.
+    no_improvement_count = st.session_state.get("clar_no_improvement_count") or {}
+    filtered_tuples = [
+        (idx, q, ing)
+        for idx, q, ing in zip(low_conf_indices, questions, low_conf_ingredients)
+        if no_improvement_count.get(idx, 0) < _MAX_NO_IMPROVEMENT_ROUNDS
+    ]
+    filtered_indices = [t[0] for t in filtered_tuples]
+    filtered_questions = [t[1] for t in filtered_tuples]
+    filtered_ingredients = [t[2] for t in filtered_tuples]
 
+    # If no questions left after filtering, treat as done and show refined result.
+    if not filtered_indices:
+        st.session_state.clar_done = True
+        st.session_state.clar_stopped_max_rounds = True  # stopped due to 2 no-improvement rounds per ingredient
+        st.session_state.clar_refined_result = _build_refined_result(
+            st.session_state.get("clar_original_names", []), clar_state
+        ).model_dump()
+        st.rerun()
+
+    # Show ALL remaining low-confidence questions at once so the user can provide info for each.
     with st.chat_message("assistant"):
-        st.markdown(current_question)
+        st.markdown("To improve our match, please add details for each ingredient below:")
 
     with st.form("clar_reply_form", clear_on_submit=True):
-        user_answer = st.text_input(
-            "Your answer",
-            placeholder=f"Describe the {current_ingredient} in more detail…",
-            key="clar_user_answer_input",
-        )
-        submitted = st.form_submit_button("Send ➤", type="primary", use_container_width=True)
+        answer_keys: list[int] = []
+        for i, (target_idx, q, ing) in enumerate(zip(filtered_indices, filtered_questions, filtered_ingredients)):
+            placeholder_ing = original_names[target_idx] if target_idx < len(original_names) else ing
+            st.markdown(f"**{ing}**")
+            st.caption(q)
+            st.text_input(
+                "Your answer",
+                placeholder=f"e.g. boiled, semolina, no sauce",
+                key=f"clar_answer_{target_idx}",
+                label_visibility="collapsed",
+            )
+            answer_keys.append(target_idx)
+
+        submitted = st.form_submit_button("Send all answers ➤", type="primary", width='stretch')
 
     if submitted:
-        if not user_answer.strip():
-            st.warning("Please type an answer before sending.")
+        # Collect answers in order of low_conf_indices (same order as questions)
+        answers: list[str] = []
+        for target_idx in answer_keys:
+            val = st.session_state.get(f"clar_answer_{target_idx}", "") or ""
+            answers.append(val.strip())
+
+        if not any(answers):
+            st.warning("Please fill in at least one answer.")
         else:
-            # Capture scores BEFORE re-running so we can show the delta in history.
+            # Capture scores BEFORE re-running
             scores_before = list(clar_state.get("scores", []))
 
-            # Enrich the query string so the next graph pass gets more context.
-            current_query = st.session_state.clar_query_names[target_idx]
-            st.session_state.clar_query_names[target_idx] = (
-                f"{current_query} {user_answer.strip()}"
-            )
+            # One LLM call to get refined phrases for all (ingredient, answer) pairs
+            dish_name = st.session_state.get("clar_dish_name", "")
+            from ..ml.clarification_questions import refine_ingredients_batch
 
-            # Re-run the full clarification graph with the updated ingredient list.
-            with st.spinner("Agent is re-analysing…"):
+            ingredients_with_answers = [
+                (st.session_state.clar_query_names[target_idx], answers[i])
+                for i, target_idx in enumerate(answer_keys)
+            ]
+            refined_list = refine_ingredients_batch(ingredients_with_answers, dish_name)
+
+            for i, target_idx in enumerate(answer_keys):
+                current_query = st.session_state.clar_query_names[target_idx]
+                st.session_state.clar_fallback_queries[target_idx] = current_query
+                st.session_state.clar_query_names[target_idx] = refined_list[i] if i < len(refined_list) else current_query
+
+            # Re-run the full clarification graph once with all updated queries
+            with st.spinner("Re-analysing all ingredients…"):
                 _run_clarification_graph()
 
-            # Capture scores AFTER re-running and store the full turn record.
             new_state = st.session_state.get("clar_state") or {}
             scores_after = list(new_state.get("scores", []))
+
+            # Keep the winning query for indices where fallback was better, so next round
+            # we don't drop below the best score we already had (overall confidence won't decrease).
+            used_fallback = new_state.get("used_fallback_indices") or []
+            for idx in used_fallback:
+                if idx in st.session_state.clar_fallback_queries:
+                    st.session_state.clar_query_names[idx] = st.session_state.clar_fallback_queries[idx]
+
+            # Update per-ingredient no-improvement count: stop asking after 2 rounds with negligible improvement.
+            no_improvement = st.session_state.get("clar_no_improvement_count") or {}
+            for i, target_idx in enumerate(answer_keys):
+                sb = scores_before[target_idx] if target_idx < len(scores_before) else 0.0
+                sa = scores_after[target_idx] if target_idx < len(scores_after) else 0.0
+                delta = sa - sb
+                if delta < _NEGLIGIBLE_IMPROVEMENT:
+                    no_improvement[target_idx] = no_improvement.get(target_idx, 0) + 1
+                else:
+                    no_improvement[target_idx] = 0
+            st.session_state.clar_no_improvement_count = no_improvement
+
             st.session_state.clar_history.append(
                 {
-                    "question": current_question,
-                    "answer": user_answer.strip(),
+                    "questions": filtered_questions,
+                    "answers": [answers[i] if i < len(answers) else "" for i in range(len(filtered_questions))],
                     "scores_before": scores_before,
                     "scores_after": scores_after,
                 }
             )
-
-            # Force a re-render so updated history and new question appear immediately.
             st.rerun()
 
 
@@ -909,7 +1011,7 @@ def _render_dish_search_section(client: NutriGraphClient) -> None:
             key="diner_restaurant",
         )
 
-    if st.button("🔮 Estimate Nutrition", type="primary", use_container_width=True):
+    if st.button("🔮 Estimate Nutrition", type="primary", width='stretch'):
         if not dish_name:
             st.warning("Please enter a dish name.")
             return

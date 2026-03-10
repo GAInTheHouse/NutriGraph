@@ -247,7 +247,7 @@ def _render_dish_builder_section(client: NutriGraphClient) -> None:
         generate_clicked = st.button(
             "🧪 Generate Nutrition Profile",
             type="primary",
-            use_container_width=True
+            width='stretch'
         )
     
     with col_gen2:
@@ -292,7 +292,7 @@ def _render_add_ingredient_form() -> None:
         )
     
     with col4:
-        if st.button("➕ Add", key="add_ingredient", use_container_width=True):
+        if st.button("➕ Add", key="add_ingredient", width='stretch'):
             if new_ing_name:
                 new_ingredient = Ingredient(
                     name=new_ing_name,

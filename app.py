@@ -4,7 +4,20 @@ NutriGraph - Streamlit Application Entrypoint
 A nutrition estimation and tracking application with separate interfaces
 for diners (consumers) and restaurants.
 """
+import logging
+import os
+
 import streamlit as st
+
+# Show clarification/retrieval logs in terminal when developing (set NUTRIGRAPH_LOG=INFO)
+_log_level = os.environ.get("NUTRIGRAPH_LOG", "WARNING").upper()
+logging.basicConfig(
+    level=getattr(logging, _log_level, logging.WARNING),
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%H:%M:%S",
+)
+for _name in ("src.ml.clarification_questions", "src.backend.clarification_graph"):
+    logging.getLogger(_name).setLevel(getattr(logging, _log_level, logging.WARNING))
 
 from src.core.config import settings
 from src.core.api_client import NutriGraphClient
@@ -62,7 +75,7 @@ def render_sidebar() -> NutriGraphClient:
         st.divider()
         
         # Reset session button
-        if st.button("🔄 Reset Session", use_container_width=True):
+        if st.button("🔄 Reset Session", width='stretch'):
             reset_session_state()
             st.success("Session reset!")
             st.rerun()
