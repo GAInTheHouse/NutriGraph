@@ -338,10 +338,14 @@ def _handle_generate_profile(
         # Persist to session state so the Publish button can reference it
         st.session_state.last_generated_profile = {
             "dish_name": dish_name,
+            "serving_size": serving_size,
+            "ingredient_count": len(st.session_state.restaurant_ingredients),
+            "ingredients": [ing.model_dump() for ing in st.session_state.restaurant_ingredients],
             "calories": estimate.calories,
             "protein": estimate.protein_g,
             "carbs": estimate.carbs_g,
             "fat": estimate.fat_g,
+            "confidence": estimate.confidence,
         }
         st.session_state.dish_published = False
         
@@ -434,6 +438,9 @@ def _render_publish_section(client: NutriGraphClient) -> None:
                     protein=profile["protein"],
                     carbs=profile["carbs"],
                     fat=profile["fat"],
+                    ingredients=profile.get("ingredients", []),
+                    serving_size=profile.get("serving_size"),
+                    confidence=profile.get("confidence"),
                 )
                 st.session_state.dish_published = True
                 # Add to the local catalog immediately so it shows up without a
@@ -441,13 +448,13 @@ def _render_publish_section(client: NutriGraphClient) -> None:
                 # from the DB next render so the entry survives future sessions.
                 catalog_entry = {
                     "name": profile["dish_name"],
-                    "serving_size": None,
-                    "ingredient_count": None,
+                    "serving_size": profile.get("serving_size"),
+                    "ingredient_count": profile.get("ingredient_count"),
                     "calories": profile["calories"],
                     "protein_g": profile["protein"],
                     "carbs_g": profile["carbs"],
                     "fat_g": profile["fat"],
-                    "confidence": None,
+                    "confidence": profile.get("confidence"),
                 }
                 st.session_state.setdefault("catalog", [])
                 existing_names = {d.get("name") for d in st.session_state.catalog}

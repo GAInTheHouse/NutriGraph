@@ -251,6 +251,8 @@ class NutriGraphClient:
         carbs: float,
         fat: float,
         ingredients: Optional[list] = None,
+        serving_size: Optional[str] = None,
+        confidence: Optional[float] = None,
     ) -> None:
         """
         Publish verified dish macros to the global catalog as a restaurant owner.
@@ -260,13 +262,15 @@ class NutriGraphClient:
         record without calling the LLM.
 
         Args:
-            dish_name: Canonical name of the dish as it appears on the menu.
-            place_id:  Google Places place_id of the restaurant.
-            calories:  Total calories (kcal) per serving.
-            protein:   Total protein (g) per serving.
-            carbs:     Total carbohydrates (g) per serving.
-            fat:       Total fat (g) per serving.
-            ingredients: Optional list of per-ingredient dicts for the full breakdown.
+            dish_name:    Canonical name of the dish as it appears on the menu.
+            place_id:     Google Places place_id of the restaurant.
+            calories:     Total calories (kcal) per serving.
+            protein:      Total protein (g) per serving.
+            carbs:        Total carbohydrates (g) per serving.
+            fat:          Total fat (g) per serving.
+            ingredients:  Optional list of per-ingredient dicts for the full breakdown.
+            serving_size: Optional human-readable serving size string.
+            confidence:   Optional average retrieval confidence (0–1).
 
         Raises:
             NutriGraphAPIError: If the backend is unreachable or returns an error.
@@ -280,6 +284,8 @@ class NutriGraphClient:
             "carbs": carbs,
             "fat": fat,
             "ingredients": ingredients or [],
+            "serving_size": serving_size,
+            "confidence": confidence,
         }
         try:
             response = requests.post(url, json=payload, timeout=15)

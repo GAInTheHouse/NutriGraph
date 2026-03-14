@@ -104,6 +104,17 @@ app = FastAPI(
 @app.on_event("startup")
 def _create_tables() -> None:
     Base.metadata.create_all(bind=engine)
+    # Migrate existing DBs: add columns that may not exist yet.
+    with engine.connect() as conn:
+        for ddl in (
+            "ALTER TABLE dish_records ADD COLUMN serving_size TEXT",
+            "ALTER TABLE dish_records ADD COLUMN confidence REAL",
+        ):
+            try:
+                conn.execute(__import__("sqlalchemy").text(ddl))
+                conn.commit()
+            except Exception:
+                pass  # column already exists
 
 
 # ── Pydantic models for the new persistence endpoints ─────────────────────────
@@ -123,6 +134,8 @@ class PublishDishRequest(BaseModel):
     carbs: float = Field(..., ge=0)
     fat: float = Field(..., ge=0)
     ingredients: List[dict] = Field(default_factory=list)
+    serving_size: Optional[str] = None
+    confidence: Optional[float] = None
 
 
 _model: Optional[SentenceTransformer] = None
@@ -604,23 +617,19 @@ def publish_restaurant_dish(
     Stores the dish as ``source="restaurant"`` so future diner analyses for the same
     ``(dish_name, place_id)`` pair are served from this verified record instantly.
     """
-    # Build a DishAnalysisResponse so we can reuse save_dish_record.
-    try:
-        ingredients = [AnalyzedIngredient(**ing) for ing in payload.ingredients]
-    except Exception:
-        ingredients = []
-
-    analysis = DishAnalysisResponse(
+    record = DishRecord(
         dish_name=payload.dish_name.strip(),
-        total_calories=payload.calories,
-        total_protein=payload.protein,
-        total_carbs=payload.carbs,
-        total_fat=payload.fat,
-        ingredients=ingredients,
-        is_cached=False,
-        data_source="restaurant_verified",
+        restaurant_place_id=payload.place_id.strip(),
+        source="restaurant",
+        calories=payload.calories,
+        protein=payload.protein,
+        carbs=payload.carbs,
+        fat=payload.fat,
+        ingredients_json=json.dumps(payload.ingredients),
+        serving_size=payload.serving_size,
+        confidence=payload.confidence,
     )
-    save_dish_record(db, analysis, payload.place_id.strip(), source="restaurant")
+    db.add(record)
     db.commit()
     return {"status": "published"}
 
@@ -644,13 +653,13 @@ def list_restaurant_dishes(
     dishes = [
         {
             "name": r.dish_name,
-            "serving_size": None,
+            "serving_size": r.serving_size,
             "ingredient_count": len(json.loads(r.ingredients_json or "[]")),
             "calories": r.calories,
             "protein_g": r.protein,
             "carbs_g": r.carbs,
             "fat_g": r.fat,
-            "confidence": None,
+            "confidence": r.confidence,
         }
         for r in records
     ]

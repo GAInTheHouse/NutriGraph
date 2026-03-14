@@ -89,16 +89,20 @@ def save_dish_record(
     dish_data,  # DishAnalysisResponse — avoid circular import by typing loosely
     place_id: Optional[str],
     source: str,
+    serving_size: Optional[str] = None,
+    confidence: Optional[float] = None,
 ) -> DishRecord:
     """
     Persist a nutritional analysis result as a :class:`DishRecord`.
 
     Args:
-        db:        Active SQLAlchemy session.
-        dish_data: A :class:`~src.core.models.DishAnalysisResponse` instance
-                   whose ``ingredients`` list will be serialised to JSON.
-        place_id:  Google Places place_id (or ``None`` for home-cooked).
-        source:    ``"diner"`` or ``"restaurant"``.
+        db:           Active SQLAlchemy session.
+        dish_data:    A :class:`~src.core.models.DishAnalysisResponse` instance
+                      whose ``ingredients`` list will be serialised to JSON.
+        place_id:     Google Places place_id (or ``None`` for home-cooked).
+        source:       ``"diner"`` or ``"restaurant"``.
+        serving_size: Optional human-readable serving size string.
+        confidence:   Optional average retrieval confidence (0–1).
 
     Returns:
         The newly created (but not yet committed) :class:`DishRecord`.
@@ -117,6 +121,8 @@ def save_dish_record(
         carbs=dish_data.total_carbs,
         fat=dish_data.total_fat,
         ingredients_json=json.dumps(ingredients_payload),
+        serving_size=serving_size,
+        confidence=confidence,
     )
     db.add(record)
     return record
