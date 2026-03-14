@@ -11,7 +11,7 @@ python scripts/run_eval.py \\
     --timeout 60 \\
     --max-turns 5 \\
     --artifacts-dir artifacts \\
-    --gemini-model gemini-1.5-flash
+    --gemini-model gemini-2.5-flash
 
 Environment variables
 ---------------------
@@ -84,7 +84,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--gemini-model",
-        default="gemini-1.5-flash",
+        default="gemini-2.5-flash",
         help="Gemini model name for the LLM auto-responder.",
     )
     parser.add_argument(
