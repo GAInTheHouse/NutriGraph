@@ -99,3 +99,103 @@ D097,Huevos Rancheros,home_cooked,Mexican,1 plate,300,corn tortillas 60g; fried 
 D098,Spinach Artichoke Dip with Chips,restaurant,American,1 appetizer,350,cream cheese/mayo base 150g; spinach/artichoke 100g; tortilla chips 100g,"baked cheese dip, fried chips",690,15,55,45,7,lab_like_recipe_calc
 D099,Jerk Chicken Plate,restaurant,Caribbean,1 plate,450,jerk marinated chicken leg quarter 200g; rice and peas 200g; plantains 50g,"spicy marinade, grilled",630,45,55,25,6,lab_like_recipe_calc
 D100,Roasted Turkey Breast,home_cooked,American,1 plate,250,skinless turkey breast 200g; turkey gravy 50g,oven-roasted,250,50,0,5,0,high_confidence_recipe
+D101,Baked Ziti,home_cooked,Italian,1 plate,400,ziti pasta 150g; ricotta cheese 50g; mozzarella cheese 50g; marinara sauce 150g,"baked, heavy cheese",560,25,65,22,4,high_confidence_recipe
+D102,Beef Stroganoff,restaurant,Russian,1 plate,450,egg noodles 200g; beef strips 150g; sour cream sauce 100g,simmered in rich cream sauce,810,45,70,38,3,lab_like_recipe_calc
+D103,Churros with Chocolate,restaurant,Mexican,1 serving,150,fried dough 100g; cinnamon sugar 10g; chocolate dip 40g,"deep-fried, high sugar",580,6,70,30,2,lab_like_recipe_calc
+D104,Clam Chowder (New England),restaurant,American,1 bowl,350,clams 80g; potatoes 100g; heavy cream 100g; bacon 20g; celery/onions 50g,cream and butter base,560,15,30,42,3,lab_like_recipe_calc
+D105,Shrimp Scampi,restaurant,Italian,1 plate,400,linguine 200g; shrimp 100g; butter 50g; garlic/wine sauce 50g,pasta tossed in heavy butter,830,30,75,45,3,lab_like_recipe_calc
+D106,Bagel with Cream Cheese,restaurant,American,1 piece,150,plain bagel 100g; full-fat cream cheese 50g,"toasted, thick spread",450,12,55,20,2,approximate_but_consistent
+D107,Chicken Noodle Soup,home_cooked,American,1 bowl,350,chicken broth 200g; egg noodles 50g; chicken breast 50g; carrots/celery 50g,light simmered broth,200,15,25,4,2,high_confidence_recipe
+D108,Caprese Salad,home_cooked,Italian,1 plate,250,tomatoes 120g; fresh mozzarella 100g; basil 5g; olive oil 15g; balsamic glaze 10g,"raw assembly, heavy olive oil",420,18,15,32,2,high_confidence_recipe
+D109,Meatball Sub,restaurant,American,1 sandwich,350,hoagie roll 100g; beef/pork meatballs 150g; marinara sauce 50g; provolone cheese 50g,heavy processed meats and cheese,830,35,65,48,4,lab_like_recipe_calc
+D110,Vegetable Samosas (2 pieces),restaurant,Indian,1 serving,160,potato/pea filling 100g; pastry shell 60g,deep-fried,410,8,45,22,4,lab_like_recipe_calc
+D111,Aloo Gobi,home_cooked,Indian,1 bowl,300,potatoes 150g; cauliflower 120g; vegetable oil 15g; spices 15g,pan-fried,260,6,35,11,6,high_confidence_recipe
+D112,Chicken Korma,restaurant,Indian,1 bowl,400,chicken breast 150g; heavy cream/cashew sauce 250g,highly rich nut and dairy sauce,730,35,30,52,3,lab_like_recipe_calc
+D113,Lamb Vindaloo,restaurant,Indian,1 bowl,400,lamb chunks 150g; spicy vinegar/tomato sauce 250g,"simmered, moderately oily",550,35,25,34,4,lab_like_recipe_calc
+D114,Tandoori Chicken,restaurant,Indian,1 plate,300,chicken legs/thighs 250g; yogurt marinade 50g,clay oven roasted,440,50,8,23,1,lab_like_recipe_calc
+D115,Peking Duck with Pancakes,restaurant,Chinese,1 serving,300,roasted duck with skin 150g; thin pancakes 80g; hoisin sauce 40g; scallions 30g,"fatty meat with skin, sweet sauce",780,30,55,48,3,lab_like_recipe_calc
+D116,Mapo Tofu,restaurant,Chinese,1 bowl,350,silken tofu 200g; ground pork 50g; spicy chili oil sauce 100g,swimming in chili oil,520,25,15,40,2,lab_like_recipe_calc
+D117,Kung Pao Chicken,restaurant,Chinese,1 plate,400,diced chicken 150g; peanuts 50g; dried chilies/veggies 100g; soy/sugar sauce 100g,"stir-fried in oil, high fat nuts",680,40,35,42,5,lab_like_recipe_calc
+D118,Hot and Sour Soup,restaurant,Chinese,1 bowl,300,pork broth 200g; tofu 40g; bamboo shoots/mushrooms 40g; egg ribbons 20g,thickened with cornstarch,160,10,15,6,2,approximate_but_consistent
+D119,Dim Sum Har Gow (Shrimp Dumplings),restaurant,Chinese,4 pieces,120,shrimp filling 80g; tapioca wrappers 40g,steamed,190,12,25,4,1,high_confidence_recipe
+D120,Steamed Edamame,home_cooked,Japanese,1 bowl,150,edamame pods 145g; sea salt 5g,steamed,180,16,14,7,8,high_confidence_recipe
+D121,Miso Soup,restaurant,Japanese,1 bowl,250,dashi broth 200g; miso paste 15g; tofu 25g; wakame seaweed 10g,simmered,60,5,7,2,1,high_confidence_recipe
+D122,Chicken Teriyaki Bowl,restaurant,Japanese,1 bowl,450,grilled chicken thigh 150g; teriyaki glaze 50g; white rice 200g; steamed cabbage 50g,heavy sugar glaze,700,40,95,18,3,lab_like_recipe_calc
+D123,Spicy Tuna Roll,restaurant,Japanese,1 roll,200,sushi rice 120g; raw tuna 40g; spicy mayo 30g; seaweed 10g,raw fish mixed with heavy mayo,360,12,45,14,2,lab_like_recipe_calc
+D124,Matcha Green Tea Ice Cream,restaurant,Japanese,2 scoops,130,heavy cream/milk base 100g; sugar 25g; matcha powder 5g,"dense, high dairy fat",310,5,35,16,0,approximate_but_consistent
+D125,BLT Sandwich,home_cooked,American,1 sandwich,200,white bread 70g; bacon 40g; lettuce/tomato 60g; mayonnaise 30g,"toasted, heavy mayo",490,15,35,32,3,high_confidence_recipe
+D126,Turkey Club Sandwich,restaurant,American,1 sandwich,350,toasted white bread 90g; turkey breast 100g; bacon 30g; mayo 30g; lettuce/tomato 100g,"double-decker, large portions",600,38,50,28,4,lab_like_recipe_calc
+D127,French Dip Sandwich,restaurant,American,1 sandwich,350,french roll 100g; roast beef 150g; provolone cheese 30g; au jus dip 70g,heavy meat portion,620,45,55,24,3,lab_like_recipe_calc
+D128,Philly Cheesesteak,restaurant,American,1 sandwich,400,hoagie roll 100g; shaved ribeye 150g; cheese whiz 80g; grilled onions 70g,"greasy meat, processed cheese",890,45,60,52,3,lab_like_recipe_calc
+D129,Reuben Sandwich,restaurant,American,1 sandwich,350,rye bread 80g; corned beef 120g; swiss cheese 40g; sauerkraut 60g; russian dressing 50g,"grilled in butter, fatty meat",820,35,45,55,5,lab_like_recipe_calc
+D130,Patty Melt,restaurant,American,1 sandwich,350,rye bread 80g; beef patty 150g; swiss cheese 40g; caramelized onions 50g; butter 30g,grilled heavily in butter,900,40,45,62,4,lab_like_recipe_calc
+D131,Cobb Salad (Home Cooked),home_cooked,American,1 bowl,350,mixed greens 100g; chicken breast 80g; bacon 15g; egg 50g; avocado 50g; vinaigrette 30g,controlled dressing and toppings,450,35,10,30,5,high_confidence_recipe
+D132,Chef Salad,restaurant,American,1 bowl,450,iceberg lettuce 150g; ham/turkey 100g; cheddar/swiss 50g; hard-boiled egg 50g; thousand island 100g,"heavy meat/cheese, thick dressing",790,40,25,58,4,lab_like_recipe_calc
+D133,Waldorf Salad,restaurant,American,1 bowl,250,apples 100g; celery 50g; walnuts 40g; mayonnaise 60g,heavily dressed in mayo,570,6,25,50,5,lab_like_recipe_calc
+D134,Niçoise Salad,restaurant,French,1 plate,400,mixed greens 80g; seared tuna 100g; potatoes 80g; green beans 50g; olives/egg 60g; vinaigrette 30g,olive oil based dressing,480,35,25,26,6,approximate_but_consistent
+D135,Macaroni Salad,home_cooked,American,1 bowl,200,elbow macaroni 100g; mayonnaise 40g; celery/onion 40g; hard-boiled egg 20g,chilled pasta mixed with mayo,440,8,35,30,2,high_confidence_recipe
+D136,Potato Salad,home_cooked,American,1 bowl,200,boiled potatoes 120g; mayonnaise 50g; celery/onion 20g; hard-boiled egg 10g,chilled potatoes mixed with mayo,410,5,25,32,3,high_confidence_recipe
+D137,Coleslaw (Restaurant Style),restaurant,American,1 side,150,shredded cabbage/carrots 100g; sweet mayonnaise dressing 50g,"high sugar, high fat dressing",260,2,15,22,3,lab_like_recipe_calc
+D138,Baked Potato with Sour Cream,restaurant,American,1 potato,300,russet potato 200g; sour cream 60g; butter 30g; chives 10g,loaded with heavy fats,490,7,45,32,4,lab_like_recipe_calc
+D139,Sweet Potato Fries,restaurant,American,1 basket,200,sweet potatoes 150g; frying oil 45g; salt 5g,deep-fried,510,3,35,40,6,lab_like_recipe_calc
+D140,Tater Tots,restaurant,American,1 basket,200,formed grated potatoes 160g; frying oil 40g,deep-fried,490,4,40,35,4,lab_like_recipe_calc
+D141,Chili con Carne,restaurant,Tex-Mex,1 bowl,400,ground beef (80/20) 150g; kidney beans 100g; tomato/chili sauce 150g,"fatty beef base, no draining",560,35,35,32,10,lab_like_recipe_calc
+D142,Chicken Tortilla Soup,restaurant,Tex-Mex,1 bowl,400,chicken broth 150g; shredded chicken 80g; tomatoes/corn 100g; fried tortilla strips 40g; cheese 30g,topped with fried carbs,440,30,35,20,5,approximate_but_consistent
+D143,Gazpacho,home_cooked,Spanish,1 bowl,300,blended tomatoes/cucumbers/peppers 270g; olive oil 20g; vinegar 10g,"raw blended, chilled",230,3,15,18,4,high_confidence_recipe
+D144,Butternut Squash Soup,home_cooked,American,1 bowl,350,pureed butternut squash 250g; vegetable broth 80g; heavy cream 20g,"simmered, lightly creamy",190,3,25,8,5,high_confidence_recipe
+D145,Tomato Bisque,restaurant,American,1 bowl,350,crushed tomatoes 200g; heavy cream 100g; butter 30g; sugar 20g,highly enriched with dairy fat,530,6,30,42,4,lab_like_recipe_calc
+D146,Beef Bourguignon,restaurant,French,1 plate,450,beef chuck 200g; red wine sauce 100g; mushrooms/onions 50g; mashed potatoes 100g,slow-braised meat in wine/butter,660,45,30,40,4,lab_like_recipe_calc
+D147,Coq au Vin,restaurant,French,1 plate,450,chicken thighs/legs 200g; red wine reduction 100g; bacon/mushrooms/onions 150g,slow-cooked with bacon fat,610,45,15,42,3,approximate_but_consistent
+D148,Ratatouille,home_cooked,French,1 plate,350,eggplant/zucchini/peppers/tomatoes 300g; olive oil 30g; herbs 20g,stewed vegetables,340,5,25,25,8,high_confidence_recipe
+D149,Quiche Lorraine,restaurant,French,1 slice,200,pie crust 60g; egg/cream custard 100g; bacon 20g; gruyere cheese 20g,baked heavy cream and pastry,650,18,35,48,1,lab_like_recipe_calc
+D150,Butter Croissant,restaurant,French,1 piece,80,laminated dough (flour/butter/yeast/sugar) 80g,"baked, extreme butter content",330,6,38,18,2,high_confidence_recipe
+D151,Chocolate Croissant (Pain au Chocolat),restaurant,French,1 piece,90,laminated dough 75g; dark chocolate batons 15g,baked,380,7,45,20,2,approximate_but_consistent
+D152,Blueberry Muffin,restaurant,American,1 large muffin,150,flour/sugar/oil batter 120g; blueberries 30g,"baked, high sugar/oil cake",520,6,75,22,2,lab_like_recipe_calc
+D153,Banana Bread,home_cooked,American,1 slice,100,mashed bananas 40g; flour 30g; sugar 15g; butter/oil 10g; egg 5g,baked,290,4,45,10,2,high_confidence_recipe
+D154,Cinnamon Roll with Icing,restaurant,American,1 large roll,200,enriched dough 120g; cinnamon sugar/butter filling 40g; cream cheese icing 40g,"baked, extreme sugar",810,8,115,35,3,lab_like_recipe_calc
+D155,Slice of Apple Pie,restaurant,American,1 slice,180,pie crust (butter/shortening) 60g; sweetened apples 120g,"baked, high fat crust",440,4,60,20,4,approximate_but_consistent
+D156,Slice of Pecan Pie,restaurant,American,1 slice,150,pie crust 50g; corn syrup/sugar/egg filling 70g; pecans 30g,"baked, extreme sugar and nut fat",640,6,70,38,3,lab_like_recipe_calc
+D157,Slice of Key Lime Pie,restaurant,American,1 slice,150,graham cracker crust 40g; condensed milk/lime/egg yolk filling 110g,"baked, high sugar dairy",500,8,65,24,1,lab_like_recipe_calc
+D158,Tiramisu,restaurant,Italian,1 slice,150,mascarpone cheese/egg mix 80g; ladyfingers 40g; espresso/sugar/cocoa 30g,"chilled, high fat cheese",450,7,40,28,1,approximate_but_consistent
+D159,Cannoli,restaurant,Italian,1 piece,100,deep-fried pastry shell 30g; sweetened ricotta filling 60g; chocolate chips 10g,fried shell,280,6,30,15,1,high_confidence_recipe
+D160,Panna Cotta,restaurant,Italian,1 dessert,130,heavy cream/milk/sugar base 100g; gelatin 5g; berry coulis 25g,"chilled, mostly cream",380,3,25,30,1,lab_like_recipe_calc
+D161,Pistachio Gelato,restaurant,Italian,2 scoops,150,milk/sugar base 120g; pistachio paste 30g,"churned, dense",320,7,40,15,2,approximate_but_consistent
+D162,Churros (No Dip),restaurant,Mexican,1 serving,100,fried choux pastry 90g; cinnamon sugar 10g,deep-fried,400,4,50,20,1,lab_like_recipe_calc
+D163,Caramel Flan,restaurant,Mexican,1 dessert,150,egg/condensed milk custard 120g; caramel syrup 30g,baked water bath,310,8,45,10,0,approximate_but_consistent
+D164,Tres Leches Cake,restaurant,Mexican,1 slice,200,sponge cake 80g; three milks syrup 100g; whipped cream 20g,soaked sponge cake,450,8,60,20,0,lab_like_recipe_calc
+D165,Arroz con Leche,home_cooked,Mexican,1 bowl,200,cooked white rice 100g; whole milk/evaporated milk 70g; sugar/cinnamon 30g,simmered,280,6,50,6,1,high_confidence_recipe
+D166,Chicken Empanadas (2 pieces),restaurant,Latin American,1 serving,200,pastry dough 100g; shredded chicken/veg filling 100g,deep-fried,580,18,55,32,3,lab_like_recipe_calc
+D167,Beef Empanadas (2 pieces),restaurant,Latin American,1 serving,200,pastry dough 100g; ground beef/olive filling 100g,baked,510,20,50,25,3,lab_like_recipe_calc
+D168,Cheese Quesadilla,home_cooked,Mexican,1 serving,150,flour tortilla 70g; cheddar/monterey jack 80g,pan-toasted,480,22,35,28,2,high_confidence_recipe
+D169,Chicken Quesadilla,restaurant,Mexican,1 serving,300,large flour tortilla 100g; grilled chicken 100g; cheese 100g,griddle-cooked with oil,820,45,55,45,3,lab_like_recipe_calc
+D170,Steak Fajitas,restaurant,Mexican,1 skillet,450,sliced skirt steak 150g; peppers/onions 100g; flour tortillas 120g; sour cream 50g; guacamole 30g,oil-seared,880,45,80,42,8,lab_like_recipe_calc
+D171,Shrimp Fajitas,restaurant,Mexican,1 skillet,450,large shrimp 150g; peppers/onions 100g; flour tortillas 120g; sour cream 50g; guacamole 30g,oil-seared,730,35,80,30,8,lab_like_recipe_calc
+D172,Pork Tamales (2 pieces),restaurant,Mexican,1 serving,250,masa dough (corn/lard) 150g; shredded pork filling 100g,steamed in husks,560,18,45,35,5,lab_like_recipe_calc
+D173,Chiles Rellenos,restaurant,Mexican,1 plate,350,poblano peppers 100g; cheese filling 100g; egg batter/oil 80g; tomato sauce 70g,"stuffed, battered, deep-fried",630,25,30,45,4,lab_like_recipe_calc
+D174,Posole (Red Pork),restaurant,Mexican,1 large bowl,600,pork shoulder chunks 150g; hominy 150g; red chile broth 250g; cabbage/radish garnish 50g,simmered rich broth,550,35,45,25,8,approximate_but_consistent
+D175,Menudo,restaurant,Mexican,1 large bowl,600,beef tripe 150g; hominy 100g; red chile broth 300g; lime/onion 50g,simmered long hours,420,35,30,18,4,lab_like_recipe_calc
+D176,Shrimp Ceviche,restaurant,Latin American,1 bowl,250,raw shrimp (lime-cured) 150g; tomatoes/onions/cilantro 80g; avocado 20g,raw acid-cured,230,30,10,8,3,high_confidence_recipe
+D177,Fish Tacos,home_cooked,Mexican,1 plate,300,grilled white fish 120g; corn tortillas 90g; cabbage slaw 60g; yogurt sauce 30g,"grilled, light sauce",360,28,45,8,5,high_confidence_recipe
+D178,Fried Shrimp Tacos,restaurant,Mexican,1 plate,350,battered deep-fried shrimp 120g; flour tortillas 100g; cabbage slaw 60g; mayo-crema 70g,"deep-fried, heavy mayo",710,20,60,43,4,lab_like_recipe_calc
+D179,Carne Asada Fries,restaurant,Tex-Mex,1 plate,500,french fries 200g; chopped steak 100g; melted cheese 100g; sour cream 50g; guacamole 50g,fries loaded with heavy toppings,1250,40,85,82,8,lab_like_recipe_calc
+D180,California Burrito,restaurant,Tex-Mex,1 wrap,600,large flour tortilla 100g; carne asada 150g; french fries 150g; cheese 100g; sour cream 100g,"wrapped, extreme carb and fat",1340,55,100,80,7,lab_like_recipe_calc
+D181,Breakfast Burrito,restaurant,American,1 wrap,450,flour tortilla 100g; scrambled eggs 100g; breakfast sausage 100g; hash browns 100g; cheese 50g,"wrapped, heavy meats and cheese",1060,40,70,68,4,lab_like_recipe_calc
+D182,Huevos Rancheros,restaurant,Mexican,1 plate,400,lightly fried corn tortillas 90g; fried eggs 100g; refried beans 100g; salsa ranchera 80g; cheese 30g,pan-fried,580,25,45,33,8,lab_like_recipe_calc
+D183,Chilaquiles (Red),restaurant,Mexican,1 plate,450,fried tortilla chips 150g; red salsa 150g; pulled chicken 50g; crema 50g; cotija cheese 50g,chips simmered in sauce,890,30,95,42,9,lab_like_recipe_calc
+D184,Migas,restaurant,Tex-Mex,1 plate,350,scrambled eggs 150g; fried tortilla strips 80g; cheese 50g; pico de gallo 70g,pan-fried together,650,28,50,38,5,approximate_but_consistent
+D185,Eggs Benedict,restaurant,American,1 plate,300,english muffin 60g; canadian bacon 50g; poached eggs 100g; hollandaise sauce 90g,butter-heavy emulsion sauce,700,28,35,50,2,lab_like_recipe_calc
+D186,Biscuits and Gravy,restaurant,American,1 plate,400,buttermilk biscuits 150g; sausage gravy (milk/flour/pork fat) 250g,"baked dough, high fat gravy",840,20,65,55,2,lab_like_recipe_calc
+D187,Chicken and Waffles,restaurant,American,1 plate,500,deep-fried chicken breast 200g; belgian waffle 150g; butter 30g; maple syrup 120g,"deep-fried meat, massive sugar",1290,45,150,55,3,lab_like_recipe_calc
+D188,Belgian Waffle with Berries,restaurant,American,1 plate,350,waffle batter (cooked) 180g; mixed berries 70g; whipped cream 50g; maple syrup 50g,"griddle cooked, sweet toppings",650,12,90,26,3,approximate_but_consistent
+D189,French Toast,restaurant,American,1 plate,350,thick-cut brioche bread 150g; egg/milk batter 80g; butter 30g; powdered sugar/syrup 90g,"pan-fried in butter, heavy syrup",900,15,120,40,2,lab_like_recipe_calc
+D190,Crepes (Nutella and Banana),restaurant,French,1 plate,250,thin crepe batter (cooked) 100g; nutella spread 80g; sliced bananas 70g,"griddle cooked, high sugar/oil",660,10,85,30,4,lab_like_recipe_calc
+D191,Oatmeal with Raisins,home_cooked,American,1 bowl,300,rolled oats 50g; water 200g; raisins 40g; brown sugar 10g,boiled,290,6,62,3,6,high_confidence_recipe
+D192,Granola with Yogurt,home_cooked,American,1 bowl,250,plain greek yogurt 150g; honey-baked granola 80g; honey 20g,raw assembly,440,18,65,12,5,high_confidence_recipe
+D193,Green Smoothie Bowl,restaurant,American,1 bowl,400,blended spinach/banana/mango/almond milk 300g; granola 50g; chia seeds 20g; coconut flakes 30g,"blended, heavy toppings",480,10,70,18,12,approximate_but_consistent
+D194,Acai Bowl,restaurant,Brazilian,1 bowl,450,frozen acai puree 200g; bananas 100g; granola 100g; honey 50g,"blended frozen base, high sugar",650,12,125,12,10,lab_like_recipe_calc
+D195,Fresh Fruit Salad,home_cooked,American,1 bowl,300,melon/grapes/berries/pineapple 300g,raw cut fruit,150,2,38,0,5,high_confidence_recipe
+D196,Cottage Cheese with Peaches,home_cooked,American,1 bowl,250,2% cottage cheese 150g; canned peaches in juice 100g,raw assembly,170,16,18,3,1,high_confidence_recipe
+D197,Hummus with Pita,restaurant,Middle Eastern,1 appetizer,250,chickpea/tahini/oil dip 150g; warm pita bread 100g,"pureed, high olive oil/sesame",630,18,65,32,10,lab_like_recipe_calc
+D198,Baba Ganoush with Veggies,restaurant,Middle Eastern,1 appetizer,300,roasted eggplant/tahini dip 150g; carrot/celery sticks 150g,"roasted, mashed with sesame paste",280,8,25,18,9,approximate_but_consistent
+D199,Tabbouleh Salad,home_cooked,Middle Eastern,1 bowl,200,bulgur wheat 50g; fresh parsley/mint 50g; tomatoes 50g; olive oil 15g; lemon juice 35g,raw chopped salad,320,5,40,15,8,high_confidence_recipe
+D200,Falafel Plate with Sides,restaurant,Middle Eastern,1 plate,500,deep-fried falafel 150g; hummus 100g; tabbouleh 100g; pita bread 100g; tahini sauce 50g,"deep-fried chickpea balls, heavy dips",1030,35,110,50,18,lab_like_recipe_calc
