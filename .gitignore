@@ -4,6 +4,7 @@ data/processed/
 data/chroma/
 data/sample_images/
 data/nutrigraph.db
+data/golden_set.csv
 
 # Python
 __pycache__/
