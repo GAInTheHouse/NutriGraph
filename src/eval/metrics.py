@@ -196,18 +196,20 @@ def compute_judge_stats(records: list[EvalRecord]) -> dict[str, Any]:
             "mean": float("nan"),
             "median": float("nan"),
             "std": float("nan"),
-            "buckets": {"0-3": 0, "3-7": 0, "7-10": 0},
+            "buckets": {"[0,3)": 0, "[3,7)": 0, "[7,10]": 0},
         }
 
     scores = [r.judge.score for r in scored]  # type: ignore[union-attr]
-    buckets = {"0-3": 0, "3-7": 0, "7-10": 0}
+    # Half-open intervals: [0,3), [3,7), [7,10]
+    # Labels use standard interval notation so they match the comparisons exactly.
+    buckets: dict[str, int] = {"[0,3)": 0, "[3,7)": 0, "[7,10]": 0}
     for s in scores:
         if s < 3:
-            buckets["0-3"] += 1
+            buckets["[0,3)"] += 1
         elif s < 7:
-            buckets["3-7"] += 1
+            buckets["[3,7)"] += 1
         else:
-            buckets["7-10"] += 1
+            buckets["[7,10]"] += 1
 
     return {
         "mean": statistics.mean(scores),

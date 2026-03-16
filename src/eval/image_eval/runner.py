@@ -10,30 +10,29 @@ run_full_pipeline_eval()
     Same API calls; computes full-pipeline metrics instead
     (MAE, MAPE, coverage, latency, LLM-as-a-judge quality score).
 
-Both functions
-    • save raw records to artifacts/image_eval_records.csv
-    • save a JSON metrics summary
-    • return (records, metrics_dict)
+run_image_ingredients_eval() artifacts
+    • artifacts/image_ingredients_records.csv
+    • artifacts/image_ingredients_metrics.json
+    • artifacts/image_ingredients_report.md  (written by report.py)
+
+run_full_pipeline_eval() artifacts
+    • artifacts/full_pipeline_records.csv
+    • artifacts/full_pipeline_metrics.json
+    • artifacts/full_pipeline_report.md  (written by report.py)
+
+Both functions return (records, metrics_dict).
 """
 from __future__ import annotations
 
 import json
 import logging
 import math
-import os
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 
 from src.eval.models import GoldenDish, JudgeResult
-from src.eval.metrics import (
-    compute_coverage,
-    compute_latency_stats,
-    compute_mae,
-    compute_mape,
-    compute_judge_stats,
-)
 from .client import ImageEvalClient, ImageEvalClientError
 from .metrics import (
     compute_dish_name_accuracy,

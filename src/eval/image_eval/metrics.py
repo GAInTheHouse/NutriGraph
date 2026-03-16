@@ -30,9 +30,14 @@ from .models import ImageEvalRecord
 
 _QTY_PATTERN = re.compile(
     r"""
-    \d+(?:\.\d+)?        # number  (e.g. 150, 0.5)
-    \s*                  # optional space
-    (?:ml|g|oz|lb|cup|tbsp|tsp|piece|pc|slice|clove)?
+    (?<!\w)              # not preceded by a word char — avoids matching
+                         # numbers inside tokens like "B12" or "7-spice"
+    \d+(?:\.\d+)?        # number (e.g. 150, 0.5)
+    \s*                  # optional space between number and unit
+    (?:ml|g|oz|lb|cups?|tbsp|tsp|pieces?|pcs?|slices?|cloves?)
+                         # unit is now REQUIRED so bare numbers ("7", "12")
+                         # that are part of an ingredient name are preserved
+    \b                   # word boundary — prevents "g" matching mid-word
     """,
     re.VERBOSE | re.IGNORECASE,
 )

@@ -6,6 +6,7 @@ the closest matches from the ChromaDB ingredient index.
 """
 
 import json
+import logging
 import os
 import re
 import sys
@@ -29,6 +30,8 @@ from sqlalchemy.orm import Session
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
+
+logger = logging.getLogger(__name__)
 
 from src.core.models import AnalyzedIngredient, Dish, DishAnalysisResponse, NutritionEstimate, PlacesResponse  # noqa: E402
 from src.ml.extract_ingredients import extract_ingredients_from_image, _HISTORICAL_CONTEXT_SNIPPET  # noqa: E402
@@ -742,6 +745,10 @@ def _parse_ingredients_list(ingredients_list: str) -> tuple:
     Each segment is expected to end with a gram quantity such as ``150g`` or
     ``50.5 g``.  Segments without a quantity default to 100 g.
 
+    Segments whose name is empty after the quantity is stripped (e.g. a bare
+    ``"150g"`` token) are silently skipped so that ``names`` and ``grams``
+    always remain strictly index-aligned.
+
     Example::
 
         'romaine lettuce 150g; grilled chicken breast (no skin) 120g'
@@ -755,11 +762,17 @@ def _parse_ingredients_list(ingredients_list: str) -> tuple:
             continue
         m = re.search(r"(\d+(?:\.\d+)?)\s*g\s*$", part, re.IGNORECASE)
         if m:
-            names.append(part[: m.start()].strip())
-            grams.append(float(m.group(1)))
+            name = part[: m.start()].strip()
+            gram = float(m.group(1))
         else:
-            names.append(part)
-            grams.append(100.0)
+            name = part
+            gram = 100.0
+        if not name:
+            # Segment was a bare quantity with no ingredient name; skip both
+            # values so names↔grams indices never diverge.
+            continue
+        names.append(name)
+        grams.append(gram)
     return names, grams
 
 
@@ -996,6 +1009,7 @@ def analyze_dish_respond(payload: AnalyzeDishRespondRequest) -> dict:
         )
 
     # Refine the low-confidence ingredients using the answers
+    refinement_warning: str | None = None
     try:
         from src.ml.clarification_questions import refine_ingredients_batch
 
@@ -1009,11 +1023,22 @@ def analyze_dish_respond(payload: AnalyzeDishRespondRequest) -> dict:
         for i, idx in enumerate(low_indices):
             if idx < len(updated) and i < len(refined):
                 updated[idx] = refined[i]
-    except Exception:
-        # If refinement fails, continue with unmodified ingredient strings
+    except Exception as exc:
+        logger.warning(
+            "refine_ingredients_batch failed for session %s (dish=%r); "
+            "continuing with unrefined ingredients. Error: %s",
+            payload.session_id,
+            session.dish_name,
+            exc,
+            exc_info=True,
+        )
         updated = list(session.current_ingredients)
+        refinement_warning = (
+            f"Ingredient refinement failed ({type(exc).__name__}: {exc}); "
+            "analysis continued with unrefined ingredient strings."
+        )
 
-    return _run_graph_and_respond(
+    response = _run_graph_and_respond(
         dish_id=session.dish_id,
         dish_name=session.dish_name,
         ingredients=updated,
@@ -1021,6 +1046,9 @@ def analyze_dish_respond(payload: AnalyzeDishRespondRequest) -> dict:
         num_questions_so_far=session.num_questions_total,
         existing_session_id=payload.session_id,
     )
+    if refinement_warning:
+        response["refinement_warning"] = refinement_warning
+    return response
 
 
 # ---------------------------------------------------------------------------

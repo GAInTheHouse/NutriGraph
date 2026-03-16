@@ -112,9 +112,9 @@ def _judge_section(js: dict) -> tuple[str, str]:
         ["Mean score", _fmt(js.get("mean"))],
         ["Median score", _fmt(js.get("median"))],
         ["Std dev", _fmt(js.get("std"))],
-        ["Scores 0–3 (count)", str(buckets.get("0-3", "N/A"))],
-        ["Scores 3–7 (count)", str(buckets.get("3-7", "N/A"))],
-        ["Scores 7–10 (count)", str(buckets.get("7-10", "N/A"))],
+        ["Scores [0,3) (count)",  str(buckets.get("[0,3)",  "N/A"))],
+        ["Scores [3,7) (count)",  str(buckets.get("[3,7)",  "N/A"))],
+        ["Scores [7,10] (count)", str(buckets.get("[7,10]", "N/A"))],
     ]
     return _format_table(headers, rows), _md_table(headers, rows)
 
