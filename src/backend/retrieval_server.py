@@ -695,8 +695,9 @@ class _AnalysisSession:
     dish_name: str
     current_ingredients: List[str]   # refined after each round
     grams: List[float]               # gram quantities per ingredient (fixed)
-    low_conf_indices: List[int]      # ingredient indices still low-confidence
+    low_conf_indices: List[int]      # ingredient indices asked about in this round
     num_questions_total: int         # cumulative questions asked so far
+    asked_indices: List[int] = dc_field(default_factory=list)  # all indices ever asked about
     created_at: float = dc_field(default_factory=_time.time)
 
 
@@ -882,6 +883,7 @@ def _run_graph_and_respond(
     grams: List[float],
     num_questions_so_far: int,
     existing_session_id: Optional[str] = None,
+    asked_indices: Optional[set] = None,
 ) -> dict:
     """
     Invoke the clarification graph and return the appropriate response dict.
@@ -890,6 +892,12 @@ def _run_graph_and_respond(
     updated) and ``{"status": "needs_clarification", ...}`` is returned.
     When the graph is satisfied, the session is cleaned up and
     ``{"status": "complete", ...}`` with full nutritional totals is returned.
+
+    ``asked_indices`` is the set of ingredient indices that have already been
+    asked about in previous rounds.  Any low-confidence index in that set is
+    filtered out so the same ingredient is never asked about twice — preventing
+    an infinite clarification loop when refinement cannot push a score above
+    the confidence threshold.
     """
     try:
         graph = _get_clarification_graph()
@@ -907,6 +915,25 @@ def _run_graph_and_respond(
     questions: List[str] = state.get("questions", [])
     low_conf_indices: List[int] = state.get("low_conf_indices", [])
 
+    # Keep questions and low_conf_indices aligned (they must be parallel lists).
+    min_len = min(len(questions), len(low_conf_indices))
+    questions = questions[:min_len]
+    low_conf_indices = low_conf_indices[:min_len]
+
+    # Filter out ingredient indices that were already asked about in a previous
+    # round.  If refinement did not push those scores above the threshold we
+    # still accept the best available match rather than looping indefinitely.
+    if asked_indices:
+        filtered = [
+            (q, idx)
+            for q, idx in zip(questions, low_conf_indices)
+            if idx not in asked_indices
+        ]
+        if filtered:
+            questions, low_conf_indices = map(list, zip(*filtered))
+        else:
+            questions, low_conf_indices = [], []
+
     if questions and low_conf_indices:
         # Agent needs more information — persist session and ask
         session_id = existing_session_id or str(uuid.uuid4())
@@ -918,6 +945,7 @@ def _run_graph_and_respond(
                 current_ingredients=list(ingredients),
                 grams=list(grams),
                 low_conf_indices=low_conf_indices,
+                asked_indices=list(asked_indices) if asked_indices else [],
                 num_questions_total=num_questions_so_far + len(questions),
             ),
         )
@@ -927,7 +955,8 @@ def _run_graph_and_respond(
             "questions": questions,
         }
 
-    # Agent is satisfied — compute nutrition and return final result
+    # Agent is satisfied (or all remaining low-conf indices were already asked
+    # about) — compute nutrition and return final result.
     if existing_session_id:
         _delete_session(existing_session_id)
 
@@ -1038,6 +1067,10 @@ def analyze_dish_respond(payload: AnalyzeDishRespondRequest) -> dict:
             "analysis continued with unrefined ingredient strings."
         )
 
+    # Build the cumulative set of indices that have been asked about across all
+    # rounds (prior rounds stored in session.asked_indices plus the current round).
+    cumulative_asked = set(session.asked_indices) | set(session.low_conf_indices)
+
     response = _run_graph_and_respond(
         dish_id=session.dish_id,
         dish_name=session.dish_name,
@@ -1045,6 +1078,7 @@ def analyze_dish_respond(payload: AnalyzeDishRespondRequest) -> dict:
         grams=session.grams,
         num_questions_so_far=session.num_questions_total,
         existing_session_id=payload.session_id,
+        asked_indices=cumulative_asked,
     )
     if refinement_warning:
         response["refinement_warning"] = refinement_warning
