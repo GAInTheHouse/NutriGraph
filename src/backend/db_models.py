@@ -43,6 +43,12 @@ class DishRecord(Base):
     carbs = Column(Float, nullable=False, default=0.0)
     fat = Column(Float, nullable=False, default=0.0)
 
+    # Optional human-readable serving size (e.g. "1 bowl", "350 g").
+    serving_size = Column(String, nullable=True)
+
+    # Average retrieval confidence across all ingredients (0–1); NULL when unknown.
+    confidence = Column(Float, nullable=True)
+
     # JSON-serialised list of AnalyzedIngredient dicts (per-ingredient breakdown).
     ingredients_json = Column(Text, nullable=False, default="[]")
 

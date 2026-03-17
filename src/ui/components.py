@@ -126,7 +126,7 @@ def render_dish_catalog_table(catalog: list[dict]) -> None:
     
     # Format confidence as percentage
     if "Confidence" in df_display.columns:
-        df_display["Confidence"] = df_display["Confidence"].apply(lambda x: f"{x:.0%}")
+        df_display["Confidence"] = df_display["Confidence"].apply(lambda x: f"{x:.0%}" if x is not None else "N/A")
     
     st.dataframe(
         df_display,

@@ -23,6 +23,7 @@ import chromadb
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field, field_validator
 from sentence_transformers import SentenceTransformer
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 # Ensure the project root is on sys.path so src.* imports resolve correctly
@@ -115,6 +116,30 @@ app = FastAPI(
 @app.on_event("startup")
 def _create_tables() -> None:
     Base.metadata.create_all(bind=engine)
+    # Migrate existing DBs: add columns that may not exist yet.
+    # Use PRAGMA table_info to check which columns are already present so we
+    # only run ALTER TABLE for genuinely missing columns.  Any unexpected error
+    # (permission issue, corrupted DB, wrong table name, …) is logged and
+    # re-raised rather than silently swallowed.
+    _migrations: Dict[str, str] = {
+        "serving_size": "ALTER TABLE dish_records ADD COLUMN serving_size TEXT",
+        "confidence": "ALTER TABLE dish_records ADD COLUMN confidence REAL",
+    }
+    with engine.connect() as conn:
+        pragma_result = conn.execute(text("PRAGMA table_info(dish_records)"))
+        existing_columns = {row[1] for row in pragma_result.fetchall()}
+        for col_name, ddl in _migrations.items():
+            if col_name not in existing_columns:
+                try:
+                    conn.execute(text(ddl))
+                    conn.commit()
+                except Exception:
+                    logger.exception(
+                        "Failed to add column '%s' to dish_records; "
+                        "the schema may be in an inconsistent state.",
+                        col_name,
+                    )
+                    raise
 
 
 # ── Pydantic models for the new persistence endpoints ─────────────────────────
@@ -134,6 +159,18 @@ class PublishDishRequest(BaseModel):
     carbs: float = Field(..., ge=0)
     fat: float = Field(..., ge=0)
     ingredients: List[dict] = Field(default_factory=list)
+    serving_size: Optional[str] = None
+    confidence: Optional[float] = None
+
+    @field_validator("dish_name", "place_id")
+    @classmethod
+    def reject_whitespace_only(cls, v: str) -> str:
+        """Reject strings that are blank or contain only whitespace (422)."""
+        if not v.strip():
+            raise ValueError(
+                "must be non-empty and cannot consist of whitespace only."
+            )
+        return v
 
 
 _model: Optional[SentenceTransformer] = None
@@ -615,23 +652,19 @@ def publish_restaurant_dish(
     Stores the dish as ``source="restaurant"`` so future diner analyses for the same
     ``(dish_name, place_id)`` pair are served from this verified record instantly.
     """
-    # Build a DishAnalysisResponse so we can reuse save_dish_record.
-    try:
-        ingredients = [AnalyzedIngredient(**ing) for ing in payload.ingredients]
-    except Exception:
-        ingredients = []
-
-    analysis = DishAnalysisResponse(
+    record = DishRecord(
         dish_name=payload.dish_name.strip(),
-        total_calories=payload.calories,
-        total_protein=payload.protein,
-        total_carbs=payload.carbs,
-        total_fat=payload.fat,
-        ingredients=ingredients,
-        is_cached=False,
-        data_source="restaurant_verified",
+        restaurant_place_id=payload.place_id.strip(),
+        source="restaurant",
+        calories=payload.calories,
+        protein=payload.protein,
+        carbs=payload.carbs,
+        fat=payload.fat,
+        ingredients_json=json.dumps(payload.ingredients),
+        serving_size=payload.serving_size,
+        confidence=payload.confidence,
     )
-    save_dish_record(db, analysis, payload.place_id.strip(), source="restaurant")
+    db.add(record)
     db.commit()
     return {"status": "published"}
 
@@ -655,13 +688,13 @@ def list_restaurant_dishes(
     dishes = [
         {
             "name": r.dish_name,
-            "serving_size": None,
+            "serving_size": r.serving_size,
             "ingredient_count": len(json.loads(r.ingredients_json or "[]")),
             "calories": r.calories,
             "protein_g": r.protein,
             "carbs_g": r.carbs,
             "fat_g": r.fat,
-            "confidence": None,
+            "confidence": r.confidence,
         }
         for r in records
     ]
