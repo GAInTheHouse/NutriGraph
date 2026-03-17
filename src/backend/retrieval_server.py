@@ -23,6 +23,7 @@ import chromadb
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field, field_validator
 from sentence_transformers import SentenceTransformer
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 # Ensure the project root is on sys.path so src.* imports resolve correctly
@@ -116,16 +117,29 @@ app = FastAPI(
 def _create_tables() -> None:
     Base.metadata.create_all(bind=engine)
     # Migrate existing DBs: add columns that may not exist yet.
+    # Use PRAGMA table_info to check which columns are already present so we
+    # only run ALTER TABLE for genuinely missing columns.  Any unexpected error
+    # (permission issue, corrupted DB, wrong table name, …) is logged and
+    # re-raised rather than silently swallowed.
+    _migrations: Dict[str, str] = {
+        "serving_size": "ALTER TABLE dish_records ADD COLUMN serving_size TEXT",
+        "confidence": "ALTER TABLE dish_records ADD COLUMN confidence REAL",
+    }
     with engine.connect() as conn:
-        for ddl in (
-            "ALTER TABLE dish_records ADD COLUMN serving_size TEXT",
-            "ALTER TABLE dish_records ADD COLUMN confidence REAL",
-        ):
-            try:
-                conn.execute(__import__("sqlalchemy").text(ddl))
-                conn.commit()
-            except Exception:
-                pass  # column already exists
+        pragma_result = conn.execute(text("PRAGMA table_info(dish_records)"))
+        existing_columns = {row[1] for row in pragma_result.fetchall()}
+        for col_name, ddl in _migrations.items():
+            if col_name not in existing_columns:
+                try:
+                    conn.execute(text(ddl))
+                    conn.commit()
+                except Exception:
+                    logger.exception(
+                        "Failed to add column '%s' to dish_records; "
+                        "the schema may be in an inconsistent state.",
+                        col_name,
+                    )
+                    raise
 
 
 # ── Pydantic models for the new persistence endpoints ─────────────────────────
@@ -147,6 +161,16 @@ class PublishDishRequest(BaseModel):
     ingredients: List[dict] = Field(default_factory=list)
     serving_size: Optional[str] = None
     confidence: Optional[float] = None
+
+    @field_validator("dish_name", "place_id")
+    @classmethod
+    def reject_whitespace_only(cls, v: str) -> str:
+        """Reject strings that are blank or contain only whitespace (422)."""
+        if not v.strip():
+            raise ValueError(
+                "must be non-empty and cannot consist of whitespace only."
+            )
+        return v
 
 
 _model: Optional[SentenceTransformer] = None
