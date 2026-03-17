@@ -90,7 +90,7 @@ def render_ingredients_table(ingredients: list[Ingredient]) -> None:
     
     st.dataframe(
         df,
-        use_container_width=True,
+        width='stretch',
         hide_index=True
     )
 
@@ -130,7 +130,7 @@ def render_dish_catalog_table(catalog: list[dict]) -> None:
     
     st.dataframe(
         df_display,
-        use_container_width=True,
+        width='stretch',
         hide_index=True
     )
 

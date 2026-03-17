@@ -37,6 +37,7 @@ def main() -> None:
 
     state_in = {
         "ingredients": ingredients,
+        "dish_name": "Chicken Salad with Mystery Sauce",
         "threshold": threshold,
     }
 

@@ -1,8 +1,9 @@
 """
 Pydantic models for NutriGraph data structures.
 """
+from enum import Enum
 from pydantic import BaseModel, Field, field_validator
-from typing import Optional
+from typing import Literal, Optional
 import hashlib
 import random
 
@@ -70,7 +71,7 @@ class FeedbackSubmission(BaseModel):
 class AnalyzedIngredient(BaseModel):
     """A single ingredient identified and analyzed from a dish photo."""
     name: str = Field(..., description="Name of the identified ingredient")
-    confidence_score: float = Field(..., ge=0, le=1, description="Model confidence (0–1)")
+    confidence_score: float = Field(..., ge=0, le=1, description="Model confidence (0-1)")
     calories: float = Field(..., ge=0, description="Calories contributed by this ingredient (kcal)")
     protein: float = Field(..., ge=0, description="Protein in grams")
     carbs: float = Field(..., ge=0, description="Carbohydrates in grams")
@@ -88,6 +89,91 @@ class DishAnalysisResponse(BaseModel):
         default_factory=list,
         description="Per-ingredient breakdown with individual macros and confidence",
     )
+    is_cached: bool = Field(
+        False,
+        description="True when the response was served from the database rather than generated live",
+    )
+    data_source: str = Field(
+        "ai_generated",
+        description=(
+            "Origin of this result: 'restaurant_verified' (published by the restaurant owner), "
+            "'diner_cached' (AI result coached by past diner records), or 'ai_generated' (fresh LLM call)."
+        ),
+    )
+
+
+class MessageType(str, Enum):
+    """
+    Enum for the type of a single agent/user turn in the conversation.
+
+    Values:
+        question    - the agent is asking the user to clarify something.
+        answer      - the user's response to an agent question.
+        final_result - the agent has converged on a nutrition estimate.
+    """
+
+    question = "question"
+    answer = "answer"
+    final_result = "final_result"
+
+
+class ConversationTurn(BaseModel):
+    """
+    A single turn in the agentic conversation about a dish.
+
+    Attributes:
+        role:    Who produced this turn — exactly ``"agent"`` or ``"user"``.
+        type:    Semantic type of the message; must be a valid
+                 :class:`MessageType` value so that invalid payloads are
+                 rejected at parse time rather than silently accepted.
+        message: Human-readable text of the turn.
+        payload: Optional structured data attached to the turn (e.g. final macros
+                 returned alongside a ``final_result`` message).
+    """
+
+    role: Literal["agent", "user"] = Field(..., description="Producer of this turn")
+    type: MessageType = Field(..., description="Semantic type of the message")
+    message: str = Field(..., description="Human-readable turn text")
+    payload: Optional[dict] = Field(None, description="Optional structured payload")
+
+
+class ConversationState(BaseModel):
+    """
+    Full state of an agentic clarification conversation for a single dish.
+
+    The agent appends :class:`ConversationTurn` objects to ``history`` as the
+    dialogue progresses.  Once the agent has gathered enough information it sets
+    ``final_result`` and emits a ``final_result`` turn — the UI should then stop
+    accepting new answers and render the nutritional breakdown.
+
+    Attributes:
+        dish_id:      Opaque identifier used by the backend to look up the LangGraph
+                      session (UUID assigned on ``/agent/start``).
+        dish_name:    Human-readable dish name, echoed from the initial request.
+        history:      Ordered list of all agent/user turns so far.
+        final_result: Populated once the agent converges; ``None`` while ongoing.
+    """
+
+    dish_id: str = Field(..., description="Backend session ID for this dish conversation")
+    dish_name: str = Field(..., description="Name of the dish being analysed")
+    history: list[ConversationTurn] = Field(
+        default_factory=list, description="Ordered conversation turns"
+    )
+    final_result: Optional[DishAnalysisResponse] = Field(
+        None, description="Converged nutritional estimate, present when the agent is done"
+    )
+
+
+class PlaceSearchResult(BaseModel):
+    """A single restaurant result from the Google Places API."""
+    place_id: str = Field(..., description="Unique Google Places identifier")
+    name: str = Field(..., description="Display name of the establishment")
+    address: str = Field(..., description="Formatted street address")
+
+
+class PlacesResponse(BaseModel):
+    """Response wrapper for a Places search query."""
+    results: list[PlaceSearchResult] = Field(default_factory=list)
 
 
 # ── Hybrid retrieval models (used by /api/v1/retrieve-ingredient) ─────────────
