@@ -93,8 +93,12 @@ def main():
     documents = [make_document_text(row) for _, row in df.iterrows()]
     metadatas = []
     for _, row in df.iterrows():
+        name_str = str(row.get("name", ""))[:500]
         m = {
-            "name": str(row.get("name", ""))[:500],
+            "name": name_str,
+            # exact_name is the canonical lookup key used by HybridNutritionRetriever
+            # for keyword-substring boosting and human-readable result display.
+            "exact_name": name_str,
             "source": str(row.get("source", "")),
         }
         for k in ("energy_kcal", "protein_g", "carbohydrates_g", "fat_g"):
@@ -106,6 +110,13 @@ def main():
                     pass
         if row.get("fdc_id") is not None and pd.notna(row.get("fdc_id")):
             m["fdc_id"] = int(row["fdc_id"])
+        # brand is populated for OpenFoodFacts rows; absent for USDA rows.
+        # Stored in ChromaDB so HybridNutritionRetriever can use
+        # where={"brand": {"$eq": brand}} to pre-filter by brand before
+        # vector ranking when the LangGraph agent resolves a brand name.
+        brand_val = row.get("brand")
+        if brand_val is not None and pd.notna(brand_val) and str(brand_val).strip():
+            m["brand"] = str(brand_val).strip()[:200]
         metadatas.append(m)
 
     print(f"Adding {len(ids)} documents to ChromaDB...")

@@ -26,6 +26,7 @@ from typing import Dict, List, Optional, TypedDict
 from langgraph.graph import END, StateGraph
 
 from .retrieval_server import _get_collection, _get_embedding_model
+from .retriever import _distance_to_score
 
 logger = logging.getLogger(__name__)
 
@@ -102,17 +103,6 @@ class ClarificationState(TypedDict, total=False):
     questions: List[str]
 
 
-def _compute_score(distance: float) -> float:
-    """
-    Convert a Chroma distance into a simple similarity score in (0, 1].
-
-    We use 1 / (1 + distance) so that:
-        - distance 0   -> score 1.0 (perfect match)
-        - distance 0.5 -> ~0.67
-        - distance 1.0 -> 0.5
-    """
-    return 1.0 / (1.0 + max(distance, 0.0))
-
 
 def _normalize_for_match(text: str) -> str:
     """Normalize for matching: ASCII fold diacritics so 'sautéed' matches 'sauteed' in DB."""
@@ -156,7 +146,7 @@ def _combined_match_score(distance: float, query: str, candidate_name: str) -> f
 
     The weights (0.7, 0.3) can be tuned later once we have empirical data.
     """
-    sim_dist = _compute_score(distance)
+    sim_dist = _distance_to_score(distance)
     lex = _lexical_overlap(query, candidate_name)
     return 0.7 * sim_dist + 0.3 * lex
 
