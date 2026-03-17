@@ -88,16 +88,15 @@ class IngredientMatch(BaseModel):
 
     id: str
     name: str
-    source: str
-    distance: float = Field(
+    brand: Optional[str] = None
+    similarity_score: float = Field(
         ...,
-        description="Chroma distance (lower = closer match).",
+        description="Similarity score (higher = closer match).",
     )
     energy_kcal: Optional[float] = None
     protein_g: Optional[float] = None
     carbohydrates_g: Optional[float] = None
     fat_g: Optional[float] = None
-    fdc_id: Optional[int] = None
 
 
 class IngredientRetrievalItem(BaseModel):
@@ -244,48 +243,29 @@ def retrieve_ingredients(payload: IngredientRetrievalRequest) -> IngredientRetri
     Retrieve closest ingredient matches from the vector index.
 
     Returns one result per input ingredient (order and duplicates preserved).
-    Uses Chroma distance: lower = closer match.
+    Delegates to HybridNutritionRetriever for semantic + keyword-boost search.
     """
-    collection = _get_collection_or_raise()
-    model = _get_embedding_model()
-
-    # Preserve order and duplicates; validator ensures each item non-empty
-    queries = [s.strip() for s in payload.ingredients]
-    query_embeddings = model.encode(queries, show_progress_bar=False).tolist()
-    result = collection.query(
-        query_embeddings=query_embeddings,
-        n_results=payload.top_k,
-    )
-
+    retriever = _get_hybrid_retriever()
     out: List[IngredientRetrievalItem] = []
 
-    for q_idx, query_text in enumerate(payload.ingredients):
-        ids = result.get("ids", [[]])[q_idx]
-        dists = result.get("distances", [[]])[q_idx]
-        metadatas = result.get("metadatas", [[]])[q_idx]
-
-        matches: List[IngredientMatch] = []
-        for idx, doc_id in enumerate(ids):
-            if idx >= len(dists):
-                continue
-            distance = float(dists[idx])
-            meta = metadatas[idx] if idx < len(metadatas) else {}
-            meta = meta or {}
-
-            matches.append(
-                IngredientMatch(
-                    id=str(doc_id),
-                    name=str(meta.get("name", "")),
-                    source=str(meta.get("source", "")),
-                    distance=distance,
-                    energy_kcal=meta.get("energy_kcal"),
-                    protein_g=meta.get("protein_g"),
-                    carbohydrates_g=meta.get("carbohydrates_g"),
-                    fat_g=meta.get("fat_g"),
-                    fdc_id=meta.get("fdc_id"),
-                )
+    for query_text in payload.ingredients:
+        retrieved = retriever.search_ingredient(
+            query=query_text.strip(),
+            top_k=payload.top_k,
+        )
+        matches = [
+            IngredientMatch(
+                id=r.id,
+                name=r.name,
+                brand=r.brand,
+                similarity_score=r.similarity_score,
+                energy_kcal=r.calories,
+                protein_g=r.protein,
+                carbohydrates_g=r.carbs,
+                fat_g=r.fat,
             )
-
+            for r in retrieved
+        ]
         out.append(IngredientRetrievalItem(query=query_text, matches=matches))
 
     return IngredientRetrievalResponse(results=out)
@@ -398,11 +378,8 @@ def builder_generate_profile(payload: Dish) -> NutritionEstimate:
     scores, giving the restaurant owner a signal about how well each ingredient
     was matched in the index.
     """
-    collection = _get_collection_or_raise()
-    embed_model = _get_embedding_model()
-
     ingredient_names = [ing.name.strip() for ing in payload.ingredients if ing.name.strip()]
-    nutrition_map = _lookup_nutrition(ingredient_names, collection, embed_model)
+    nutrition_map = _lookup_nutrition(ingredient_names)
 
     total_cal = total_pro = total_carb = total_fat = 0.0
     confidence_scores: List[float] = []
@@ -443,49 +420,30 @@ def builder_generate_profile(payload: Dish) -> NutritionEstimate:
 
 # ── Dish image analysis ───────────────────────────────────────────────────────
 
-def _distance_to_confidence(distance: float) -> float:
+def _lookup_nutrition(ingredient_names: List[str]) -> Dict[str, dict]:
     """
-    Convert a ChromaDB distance score to a confidence value in [0, 1].
-
-    Uses a sigmoid-style mapping that works for both L2 and cosine distances:
-    - distance 0.0  → confidence ~1.0  (perfect match)
-    - distance 1.0  → confidence ~0.5
-    - distance 2.0+ → confidence approaching 0
-    """
-    return round(1.0 / (1.0 + distance), 4)
-
-
-def _lookup_nutrition(
-    ingredient_names: List[str],
-    collection: chromadb.Collection,
-    model: SentenceTransformer,
-) -> Dict[str, dict]:
-    """
-    Query ChromaDB for the best nutritional match for each ingredient name.
+    Look up the best nutritional match for each ingredient name via HybridNutritionRetriever.
 
     Returns a mapping of ``{ingredient_name: {energy_kcal, protein_g, carbohydrates_g, fat_g, confidence}}``.
-    Ingredients with no index match default to zeros.
+    Ingredients with no index match default to zeros.  Uses semantic + keyword-boost search
+    so results benefit from the same hybrid ranking as the LangGraph agent.
     """
     if not ingredient_names:
         return {}
 
-    embeddings = model.encode(ingredient_names, show_progress_bar=False).tolist()
-    result = collection.query(query_embeddings=embeddings, n_results=1)
-
+    retriever = _get_hybrid_retriever()
     nutrition_map: Dict[str, dict] = {}
-    for idx, name in enumerate(ingredient_names):
-        distances = result.get("distances", [[]])[idx]
-        metadatas = result.get("metadatas", [[]])[idx]
 
-        if distances and metadatas:
-            distance = float(distances[0])
-            meta = metadatas[0] or {}
+    for name in ingredient_names:
+        results = retriever.search_ingredient(query=name, top_k=1)
+        if results:
+            r = results[0]
             nutrition_map[name] = {
-                "energy_kcal": float(meta.get("energy_kcal") or 0.0),
-                "protein_g": float(meta.get("protein_g") or 0.0),
-                "carbohydrates_g": float(meta.get("carbohydrates_g") or 0.0),
-                "fat_g": float(meta.get("fat_g") or 0.0),
-                "confidence": _distance_to_confidence(distance),
+                "energy_kcal": r.calories or 0.0,
+                "protein_g": r.protein or 0.0,
+                "carbohydrates_g": r.carbs or 0.0,
+                "fat_g": r.fat or 0.0,
+                "confidence": r.similarity_score,
             }
         else:
             nutrition_map[name] = {
@@ -635,10 +593,8 @@ def analyze_dish(
         i.strip() for i in dish_info.get("ingredients", []) if i and i.strip()
     ]
 
-    # ── 4. ChromaDB: look up nutrition for each ingredient ────────────────────
-    collection = _get_collection_or_raise()
-    embed_model = _get_embedding_model()
-    nutrition_map = _lookup_nutrition(ingredient_names, collection, embed_model)
+    # ── 4. Hybrid retrieval: look up nutrition for each ingredient ────────────
+    nutrition_map = _lookup_nutrition(ingredient_names)
 
     # ── 5. Assemble and return response (no auto-save) ────────────────────────
     analyzed: List[AnalyzedIngredient] = []
